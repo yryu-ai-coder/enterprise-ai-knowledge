@@ -1,0 +1,20 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AI_PROVIDER": "mock",
+    "AI_TEMPERATURE": "0.2",
+    "AI_MAX_TOKENS": "900",
+    "AZURE_OPENAI_ENDPOINT": "https://YOUR-RESOURCE.services.ai.azure.com/openai/v1/responses",
+    "AZURE_OPENAI_API_KEY": "",
+    "AZURE_OPENAI_DEPLOYMENT": "nextcore-gpt-5-4-mini",
+    "AZURE_OPENAI_API_VERSION": "2024-06-01",
+    "AZURE_OPENAI_API_STYLE": "responses",
+    "OPENAI_API_KEY": "",
+    "OPENAI_MODEL": "gpt-4o-mini",
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    "FOUNDRY_AGENT_ENDPOINT": "",
+    "FOUNDRY_AGENT_API_KEY": ""
+  }
+}

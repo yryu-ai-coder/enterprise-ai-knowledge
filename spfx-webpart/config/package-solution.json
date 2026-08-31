@@ -1,0 +1,40 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "nextcore-ai-knowledge-webpart-client-side-solution",
+    "id": "6b7625b9-f82a-4e7b-a210-18f791335538",
+    "version": "1.0.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "",
+      "websiteUrl": "",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "mpnId": "Undefined-1.23.2"
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "nextcore-ai-knowledge-webpart description"
+      },
+      "longDescription": {
+        "default": "nextcore-ai-knowledge-webpart description"
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    },
+    "features": [
+      {
+        "title": "nextcore-ai-knowledge-webpart Feature",
+        "description": "The feature that activates elements of the nextcore-ai-knowledge-webpart solution.",
+        "id": "e5f82500-410c-4538-ba1b-7cc0ccee94b5",
+        "version": "1.0.0.0"
+      }
+    ]
+  },
+  "paths": {
+    "zippedPackage": "solution/nextcore-ai-knowledge-webpart.sppkg"
+  }
+}

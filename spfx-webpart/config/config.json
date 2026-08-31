@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/config.2.0.schema.json",
+  "version": "2.0",
+  "bundles": {
+    "ai-knowledge-workspace-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/aiKnowledgeWorkspace/AiKnowledgeWorkspaceWebPart.js",
+          "manifest": "./src/webparts/aiKnowledgeWorkspace/AiKnowledgeWorkspaceWebPart.manifest.json"
+        }
+      ]
+    }
+  },
+  "externals": {},
+  "localizedResources": {
+    "AiKnowledgeWorkspaceWebPartStrings": "lib/webparts/aiKnowledgeWorkspace/loc/{locale}.js"
+  }
+}

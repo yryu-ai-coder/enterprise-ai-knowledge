@@ -1,0 +1,19 @@
+{
+  "@microsoft/generator-sharepoint": {
+    "useGulp": false,
+    "plusBeta": false,
+    "isCreatingSolution": true,
+    "nodeVersion": "22.22.3",
+    "sdksVersions": {},
+    "version": "1.23.2",
+    "libraryName": "nextcore-ai-knowledge-webpart",
+    "libraryId": "6b7625b9-f82a-4e7b-a210-18f791335538",
+    "environment": "spo",
+    "packageManager": "npm",
+    "solutionName": "nextcore-ai-knowledge-webpart",
+    "solutionShortDescription": "nextcore-ai-knowledge-webpart description",
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "componentType": "webpart"
+  }
+}

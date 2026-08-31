@@ -1,0 +1,25 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx/client-side-web-part-manifest.schema.json",
+  "id": "06b46738-be6b-4382-976a-598d838aa686",
+  "alias": "AiKnowledgeWorkspaceWebPart",
+  "componentType": "WebPart",
+  "version": "*",
+  "manifestVersion": 2,
+  "requiresCustomScript": false,
+  "supportedHosts": ["SharePointWebPart", "TeamsPersonalApp", "TeamsTab", "SharePointFullPage"],
+  "supportsThemeVariants": true,
+  "preconfiguredEntries": [
+    {
+      "groupId": "5c03119e-3074-46fd-976b-c60198311f70",
+      "group": { "default": "Advanced" },
+      "title": { "default": "Legal Document Library AI Assistant" },
+      "description": { "default": "Reusable AI assistant panel for legal documents, SharePoint lists, and site pages" },
+      "officeFabricIconFontName": "Page",
+      "properties": {
+        "description": "Enterprise AI Knowledge Workspace",
+        "documentLibraryName": "Litigation Documents",
+        "functionEndpoint": "http://localhost:7072/api/chat"
+      }
+    }
+  ]
+}

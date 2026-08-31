@@ -1,0 +1,23 @@
+{
+  "name": "nextcore-projects-function-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Azure Functions backend for NextCore Projects reusable SharePoint AI Assistant.",
+  "main": "dist/src/functions/*.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "func start",
+    "start:mock": "npm run build && node dist/src/devServer.js",
+    "test:compile": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": "22.22.3"
+  },
+  "dependencies": {
+    "@azure/functions": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "@types/node": "latest"
+  }
+}
