@@ -4,7 +4,7 @@
   color: var(--bodyText);
   background: #f8fafc;
   font-family: "Aptos Display", "Segoe UI Variable Display", "Trebuchet MS", "Segoe UI", Arial, sans-serif;
-  font-size: 10.5px;
+  font-size: 12.5px;
 }
 
 .commandBar {
@@ -76,19 +76,19 @@
   }
 
   strong {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
   }
 
   small {
     margin-top: 2px;
     color: #64748b;
-    font-size: 10px;
+    font-size: 12px;
   }
 }
 
 .newMenuIcon {
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .folderDialogOverlay {
@@ -120,7 +120,7 @@
   > p {
     margin: 0;
     color: #475569;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.55;
   }
 }
@@ -134,7 +134,7 @@
   background: #dc2626;
   cursor: pointer;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 
   &:hover {
@@ -152,7 +152,7 @@
     display: block;
     margin-bottom: 5px;
     color: #2563eb;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.11em;
   }
@@ -160,7 +160,7 @@
   h2 {
     margin: 0;
     color: #0f172a;
-    font-size: 20px;
+    font-size: 22px;
     line-height: 1.2;
   }
 }
@@ -169,7 +169,7 @@
   display: block;
   margin-bottom: 7px;
   color: #334155;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -181,7 +181,7 @@
   border-radius: 7px;
   color: #0f172a;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 15px;
 
   &:focus {
     outline: 3px solid rgba(37, 99, 235, 0.15);
@@ -203,14 +203,14 @@
   span {
     margin-bottom: 3px;
     color: #64748b;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
   }
 
   strong {
     overflow-wrap: anywhere;
     color: #334155;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
   }
 }
@@ -229,7 +229,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -259,7 +259,7 @@
   padding: 0 9px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -323,7 +323,7 @@
   border-radius: 10px;
   color: #1e40af;
   background: #eff6ff;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -333,7 +333,7 @@
   gap: 9px;
   margin-left: 8px;
   color: #111827;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -374,7 +374,7 @@
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -417,7 +417,7 @@
   p {
     margin: 0 0 8px;
     color: #4f46e5;
-    font-size: 10.5px;
+    font-size: 12.5px;
   font-weight: 500;
   }
 
@@ -425,7 +425,7 @@
     margin: 8px 0 0;
     color: #030712;
     font-family: "Aptos Display", "Segoe UI Variable Display", "Trebuchet MS", "Segoe UI", Arial, sans-serif;
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 500;
     letter-spacing: -0.02em;
     line-height: 1.05;
@@ -438,6 +438,17 @@
   }
 }
 
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+
+  .askCommand {
+    margin-left: 0;
+  }
+}
+
 .openLibraryLink {
   display: inline-flex;
   align-items: center;
@@ -447,7 +458,7 @@
   border-radius: 7px;
   color: #1d4ed8;
   background: #ffffff;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 600;
   text-decoration: none;
 
@@ -466,8 +477,8 @@
   border-radius: 999px;
   background: #f1f5f9;
   color: #334155;
-  font-size: 10.5px;
-  font-size: 10.5px;
+  font-size: 12.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -508,10 +519,10 @@
 
 .tableHeader {
   padding: 0 0 8px;
-  font-size: 10.5px;
+  font-size: 12.5px;
   border-bottom: 1px solid #e5e7eb;
   color: #111827;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -527,7 +538,7 @@
   background: transparent;
   color: #111827;
   font: inherit;
-  font-size: 10.5px;
+  font-size: 12.5px;
 
   &:hover {
     background: #f8fafc;
@@ -577,7 +588,7 @@
   background: transparent;
   cursor: pointer;
   font: inherit;
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 500;
   overflow: visible;
   overflow-wrap: anywhere;
@@ -611,7 +622,7 @@
 
 .folderGlyph,
 .fileGlyph {
-  font-size: 17px;
+  font-size: 19px;
   flex: 0 0 auto;
 }
 
@@ -624,14 +635,14 @@
   border-radius: 10px;
   background: #f8fafc;
   color: #475569;
-  font-size: 10.5px;
+  font-size: 12.5px;
 
   button {
     border: none;
     color: #0f6cbd;
     background: transparent;
     cursor: pointer;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 500;
     padding: 0;
   }
@@ -653,7 +664,7 @@
 .breadcrumbMeta {
   margin-left: auto;
   color: #64748b;
-  font-size: 10.5px;
+  font-size: 12.5px;
 }
 
 .noticeBox,
@@ -719,14 +730,14 @@
     display: block;
     margin-bottom: 4px;
     color: #64748b;
-    font-size: 10.5px;
+    font-size: 12.5px;
     letter-spacing: 0.08em;
   }
 
   h2 {
     margin: 0;
     color: #111827;
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 500;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -745,7 +756,7 @@
     border-radius: 8px;
     color: #0f6cbd;
     background: #ffffff;
-    font-size: 10.5px;
+    font-size: 12.5px;
     text-decoration: none;
   }
 
@@ -802,7 +813,7 @@
   p {
     margin: 0;
     color: #60a5fa;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 500;
     letter-spacing: 0.1em;
   }
@@ -810,7 +821,7 @@
   h2 {
     margin: 6px 0 0;
     color: #030712;
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1.1;
   }
 }
@@ -843,7 +854,7 @@
   color: #0f172a;
   background: transparent;
   cursor: pointer;
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 300;
   line-height: 1;
 }
@@ -867,7 +878,7 @@
   h2 {
     margin: 0;
     color: #ffffff;
-    font-size: 28px;
+    font-size: 30px;
     font-weight: 700;
     letter-spacing: -0.03em;
     line-height: 1.15;
@@ -882,7 +893,7 @@
     border-radius: 999px;
     color: #dbeafe;
     background: rgba(37, 99, 235, 0.28);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
   }
 
@@ -898,7 +909,7 @@
 .aiIntro {
   margin: 14px 31px 0;
   color: #64748b;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.55;
 }
 
@@ -921,7 +932,7 @@
   border-radius: 22px 22px 5px 22px;
   color: #ffffff;
   background: #2563eb;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
 }
 
@@ -933,7 +944,7 @@
   border-radius: 18px 18px 18px 5px;
   color: #475569;
   background: #ffffff;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .aiComposer {
@@ -956,7 +967,7 @@
     background: #f8fafc;
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 13px;
 
     &:hover {
       border-color: #93c5fd;
@@ -975,7 +986,7 @@
 
   span {
     color: #94a3b8;
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.35;
   }
 }
@@ -983,7 +994,7 @@
 .aiDisclaimer {
   margin: 7px 0 0;
   color: #94a3b8;
-  font-size: 10px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -1005,13 +1016,13 @@
   strong {
     margin-bottom: 2px;
     color: #334155;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
   }
 
   span {
     color: #0f172a;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     overflow-wrap: anywhere;
   }
@@ -1030,8 +1041,8 @@
 .providerBadgeOffline {
   padding: 5px 9px;
   border-radius: 999px;
-  font-size: 10.5px;
-  font-size: 10.5px;
+  font-size: 12.5px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -1081,7 +1092,7 @@
     color: #0f6cbd;
     background: #eff6ff;
     cursor: pointer;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 500;
   }
 }
@@ -1090,7 +1101,7 @@
   display: block;
   margin-bottom: 7px;
   color: #334155;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -1106,7 +1117,7 @@
   color: #0f172a;
   background: #ffffff;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
 
   &:focus {
@@ -1125,7 +1136,7 @@
   color: #ffffff;
   background: #2563eb;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 
   &:hover:not(:disabled) {
@@ -1148,14 +1159,14 @@
   h3 {
     margin: 0 0 8px;
     color: #0f172a;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
   }
 
   p {
     margin: 0;
     color: #334155;
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1.6;
     white-space: pre-wrap;
   }
@@ -1167,7 +1178,7 @@
   summary {
     color: #0f172a;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
   }
 
@@ -1189,7 +1200,7 @@
     span {
       margin-top: 4px;
       color: #64748b;
-      font-size: 10.5px;
+      font-size: 12.5px;
     }
   }
 }
@@ -1202,7 +1213,7 @@
   display: block;
   margin-top: 10px;
   color: #64748b;
-  font-size: 10.5px;
+  font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 

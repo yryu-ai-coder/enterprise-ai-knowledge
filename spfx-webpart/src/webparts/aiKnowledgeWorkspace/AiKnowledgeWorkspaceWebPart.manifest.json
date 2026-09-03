@@ -17,7 +17,7 @@
       "officeFabricIconFontName": "Page",
       "properties": {
         "description": "Enterprise AI Knowledge Workspace",
-        "documentLibraryName": "Litigation Documents",
+        "documentLibraryName": "",
         "functionEndpoint": "https://nextcore-ai-function-bce9bufcaxb0cncm.westus-01.azurewebsites.net/api/chat"
       }
     }

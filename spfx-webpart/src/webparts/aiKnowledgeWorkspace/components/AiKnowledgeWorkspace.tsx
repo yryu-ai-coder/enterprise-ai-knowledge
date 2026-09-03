@@ -61,6 +61,12 @@ interface ISharePointListResponse {
   value: ISharePointFileItem[];
 }
 
+interface ISharePointLibraryMetadata {
+  RootFolder?: {
+    ServerRelativeUrl?: string;
+  };
+}
+
 type LibraryStatus = 'loading' | 'loaded' | 'empty' | 'error';
 type ViewMode = 'parents' | 'children' | 'files';
 type SurfaceMode = 'document-library' | 'sharepoint-list' | 'site-pages';
@@ -87,6 +93,7 @@ interface IAiKnowledgeWorkspaceState {
   surfaceMode: SurfaceMode;
   documents: ILegalDocument[];
   folderPaths: string[];
+  libraryRootServerRelativeUrl: string;
   selectedFolderPath: string;
   selectedParentFolderName: string;
   selectedFileUrl: string;
@@ -109,6 +116,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   private readonly _fileInputRef: React.RefObject<HTMLInputElement> = React.createRef<HTMLInputElement>();
   private readonly _conversationAreaRef: React.RefObject<HTMLDivElement> = React.createRef<HTMLDivElement>();
   private _answerRevealTimer: number | undefined;
+  private _commandMessageTimer: number | undefined;
 
   public constructor(props: IAiKnowledgeWorkspaceProps) {
     super(props);
@@ -134,6 +142,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       surfaceMode: 'document-library',
       documents: [],
       folderPaths: [],
+      libraryRootServerRelativeUrl: '',
       selectedFolderPath: '',
       selectedParentFolderName: '',
       selectedFileUrl: '',
@@ -141,7 +150,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       viewMode: 'parents',
       isAiPanelOpen: false,
       libraryStatus: 'loading',
-      libraryMessage: `Loading ${props.documentLibraryName || 'Litigation Documents'}...`,
+      libraryMessage: props.documentLibraryName ? `Loading ${props.documentLibraryName}...` : 'Select a document library in the Web Part properties.',
       backendStatus: 'checking',
       backendMessage: 'Checking backend health...',
       ragStatus: 'checking',
@@ -161,11 +170,23 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     if (this._answerRevealTimer !== undefined) {
       window.clearInterval(this._answerRevealTimer);
     }
+    if (this._commandMessageTimer !== undefined) {
+      window.clearTimeout(this._commandMessageTimer);
+    }
   }
 
-  public componentDidUpdate(prevProps: IAiKnowledgeWorkspaceProps): void {
+  public componentDidUpdate(prevProps: IAiKnowledgeWorkspaceProps, prevState: IAiKnowledgeWorkspaceState): void {
     if (prevProps.documentLibraryName !== this.props.documentLibraryName || prevProps.siteUrl !== this.props.siteUrl) {
       this._loadLibraryFiles().catch(() => undefined);
+    }
+
+    if (prevState.commandMessage !== this.state.commandMessage) {
+      if (this._commandMessageTimer !== undefined) {
+        window.clearTimeout(this._commandMessageTimer);
+      }
+      if (this.state.commandMessage) {
+        this._commandMessageTimer = window.setTimeout(() => this.setState({ commandMessage: '' }), 5000);
+      }
     }
   }
 
@@ -176,10 +197,37 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     const originalLibraryUrl = this._getOriginalLibraryUrl();
 
     return (
-      <section className={styles.aiKnowledgeWorkspace}>
+      <section
+        className={styles.aiKnowledgeWorkspace}
+        onClick={() => this.state.isNewMenuOpen && this.setState({ isNewMenuOpen: false })}
+      >
+        <div className={styles.surfaceTabs} aria-label="SharePoint AI surface filters">
+          <button
+            className={this.state.surfaceMode === 'document-library' ? styles.surfaceTabActive : styles.surfaceTab}
+            type="button"
+            onClick={() => this._selectSurfaceMode('document-library')}
+          >
+            Document Library
+          </button>
+          <button
+            className={this.state.surfaceMode === 'sharepoint-list' ? styles.surfaceTabActive : styles.surfaceTab}
+            type="button"
+            onClick={() => this._selectSurfaceMode('sharepoint-list')}
+          >
+            SharePoint List
+          </button>
+          <button
+            className={this.state.surfaceMode === 'site-pages' ? styles.surfaceTabActive : styles.surfaceTab}
+            type="button"
+            onClick={() => this._selectSurfaceMode('site-pages')}
+          >
+            Site Pages
+          </button>
+        </div>
+
         <div className={styles.commandBar}>
           <button className={styles.primaryCommand} type="button" onClick={() => this._openUploadPicker()}>↑ Upload</button>
-          <div className={styles.newCommandWrap}>
+          <div className={styles.newCommandWrap} onClick={(event) => event.stopPropagation()}>
             <button
               className={styles.commandButton}
               type="button"
@@ -221,9 +269,6 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           >
             🗑 Delete
           </button>
-          <button className={styles.askCommand} type="button" onClick={() => this.setState({ isAiPanelOpen: true })}>
-            ✨ Ask AI
-          </button>
           <button className={styles.refreshCommand} type="button" onClick={() => this._loadLibraryFiles().catch(() => undefined)}>
             Refresh
           </button>
@@ -237,30 +282,6 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           onChange={(event) => this._uploadFiles(event).catch(() => undefined)}
         />
 
-        <div className={styles.surfaceTabs} aria-label="SharePoint AI surface filters">
-          <button
-            className={this.state.surfaceMode === 'document-library' ? styles.surfaceTabActive : styles.surfaceTab}
-            type="button"
-            onClick={() => this._selectSurfaceMode('document-library')}
-          >
-            Document Library
-          </button>
-          <button
-            className={this.state.surfaceMode === 'sharepoint-list' ? styles.surfaceTabActive : styles.surfaceTab}
-            type="button"
-            onClick={() => this._selectSurfaceMode('sharepoint-list')}
-          >
-            SharePoint List
-          </button>
-          <button
-            className={this.state.surfaceMode === 'site-pages' ? styles.surfaceTabActive : styles.surfaceTab}
-            type="button"
-            onClick={() => this._selectSurfaceMode('site-pages')}
-          >
-            Site Pages
-          </button>
-        </div>
-
         <div className={styles.pageLayout}>
           <main className={styles.libraryCard}>
             <div className={styles.libraryHeader}>
@@ -269,11 +290,16 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                   <span className={this._getStatusDotClass()} />
                   <strong>{escape(this.state.backendMessage)}</strong>
                 </div>
-                <h1>{escape(this.props.documentLibraryName)}</h1>
+                <h1>{escape(this.props.documentLibraryName || 'Select a document library')}</h1>
               </div>
-              <a className={styles.openLibraryLink} href={originalLibraryUrl} target="_blank" rel="noreferrer">
-                ↗ Open in SharePoint
-              </a>
+              <div className={styles.headerActions}>
+                <button className={styles.askCommand} type="button" onClick={() => this.setState({ isAiPanelOpen: true })}>
+                  ✨ Ask AI
+                </button>
+                <a className={styles.openLibraryLink} href={originalLibraryUrl} target="_blank" rel="noreferrer">
+                  ↗ Open in SharePoint
+                </a>
+              </div>
             </div>
             {this.state.commandMessage && <div className={styles.commandMessage}>{escape(this.state.commandMessage)}</div>}
 
@@ -900,11 +926,38 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private async _loadLibraryFiles(navigationState?: Partial<NavigationState>): Promise<void> {
-    const libraryName = this.props.documentLibraryName || 'Litigation Documents';
+    const libraryName = this.props.documentLibraryName;
+    if (!libraryName) {
+      this.setState({
+        documents: [],
+        folderPaths: [],
+        libraryRootServerRelativeUrl: '',
+        selectedFolderPath: '',
+        selectedParentFolderName: '',
+        selectedFileUrl: '',
+        viewMode: 'parents',
+        libraryStatus: 'empty',
+        libraryMessage: 'Select a document library in the Web Part properties to load its folders and files.'
+      });
+      return;
+    }
+
     this.setState({ libraryStatus: 'loading', libraryMessage: `Loading ${libraryName}...` });
 
     try {
       const escapedLibraryName = libraryName.replace(/'/g, "''");
+      const libraryEndpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')?$select=RootFolder/ServerRelativeUrl&$expand=RootFolder`;
+      const libraryResponse: SPHttpClientResponse = await this.props.spHttpClient.get(libraryEndpoint, SPHttpClient.configurations.v1);
+      if (!libraryResponse.ok) {
+        throw new Error(`Could not read library '${libraryName}' (${libraryResponse.status} ${libraryResponse.statusText}).`);
+      }
+
+      const libraryMetadata = await libraryResponse.json() as ISharePointLibraryMetadata;
+      const libraryRootServerRelativeUrl = libraryMetadata.RootFolder?.ServerRelativeUrl || '';
+      if (!libraryRootServerRelativeUrl) {
+        throw new Error(`SharePoint did not return a root folder for '${libraryName}'.`);
+      }
+
       const endpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')/items?$select=Id,FileLeafRef,FileRef,FileDirRef,File_x0020_Type,Modified,FSObjType,Editor/Title&$expand=Editor&$orderby=FileDirRef asc,Modified desc&$top=200`;
       const response: SPHttpClientResponse = await this.props.spHttpClient.get(endpoint, SPHttpClient.configurations.v1);
 
@@ -925,6 +978,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       this.setState({
         documents,
         folderPaths,
+        libraryRootServerRelativeUrl,
         selectedFolderPath: navigationState?.selectedFolderPath || '',
         selectedParentFolderName: navigationState?.selectedParentFolderName || '',
         selectedFileUrl: navigationState?.selectedFileUrl || '',
@@ -936,6 +990,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       this.setState({
         documents: [],
         folderPaths: [],
+        libraryRootServerRelativeUrl: '',
         selectedFolderPath: '',
         selectedParentFolderName: '',
         selectedFileUrl: '',
@@ -1184,6 +1239,10 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private _getLibraryRootServerRelativeUrl(): string {
+    if (this.state.libraryRootServerRelativeUrl) {
+      return this.state.libraryRootServerRelativeUrl;
+    }
+
     const firstFolderPath = this.state.folderPaths[0] || this.state.documents[0]?.folderPath || '';
     const marker = `/${this.props.documentLibraryName}`;
     const markerIndex = firstFolderPath.toLowerCase().indexOf(marker.toLowerCase());

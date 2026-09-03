@@ -3,8 +3,11 @@ import * as ReactDom from 'react-dom';
 import { Version } from '@microsoft/sp-core-library';
 import {
   type IPropertyPaneConfiguration,
+  type IPropertyPaneDropdownOption,
+  PropertyPaneDropdown,
   PropertyPaneTextField
 } from '@microsoft/sp-property-pane';
+import { SPHttpClient } from '@microsoft/sp-http';
 import { BaseClientSideWebPart } from '@microsoft/sp-webpart-base';
 import { IReadonlyTheme } from '@microsoft/sp-component-base';
 
@@ -20,8 +23,17 @@ export interface IAiKnowledgeWorkspaceWebPartProps {
 
 export default class AiKnowledgeWorkspaceWebPart extends BaseClientSideWebPart<IAiKnowledgeWorkspaceWebPartProps> {
 
+  private static readonly _excludedDocumentLibraryTitles: Set<string> = new Set([
+    'form templates',
+    'site assets',
+    'style library'
+  ]);
+
   private _isDarkTheme: boolean = false;
   private _environmentMessage: string = '';
+  private _documentLibraryOptions: IPropertyPaneDropdownOption[] = [];
+  private _isLoadingDocumentLibraries: boolean = false;
+  private _documentLibrariesLoaded: boolean = false;
 
   public render(): void {
     const element: React.ReactElement<IAiKnowledgeWorkspaceProps> = React.createElement(
@@ -36,7 +48,7 @@ export default class AiKnowledgeWorkspaceWebPart extends BaseClientSideWebPart<I
         pageUrl: window.location.href,
         functionEndpoint: this.properties.functionEndpoint || 'http://localhost:7072/api/chat',
         functionApiResource: 'api://d3df04c0-e580-4684-877a-0733204e7e2e',
-        documentLibraryName: this.properties.documentLibraryName || 'Litigation Documents',
+        documentLibraryName: this.properties.documentLibraryName,
         spHttpClient: this.context.spHttpClient,
         aadHttpClientFactory: this.context.aadHttpClientFactory
       }
@@ -49,6 +61,36 @@ export default class AiKnowledgeWorkspaceWebPart extends BaseClientSideWebPart<I
     return this._getEnvironmentMessage().then(message => {
       this._environmentMessage = message;
     });
+  }
+
+  protected onPropertyPaneConfigurationStart(): void {
+    this._loadDocumentLibraryOptions().catch(() => undefined);
+  }
+
+  private async _loadDocumentLibraryOptions(): Promise<void> {
+    if (this._isLoadingDocumentLibraries || this._documentLibrariesLoaded) {
+      return;
+    }
+
+    this._isLoadingDocumentLibraries = true;
+    this.context.propertyPane.refresh();
+
+    try {
+      const endpoint = `${this.context.pageContext.web.absoluteUrl}/_api/web/lists?$select=Title,Id&$filter=BaseTemplate eq 101 and Hidden eq false&$orderby=Title`;
+      const response = await this.context.spHttpClient.get(endpoint, SPHttpClient.configurations.v1);
+      if (!response.ok) {
+        throw new Error(`Document library lookup failed (${response.status} ${response.statusText}).`);
+      }
+
+      const payload = await response.json() as { value?: Array<{ Title: string; Id: string }> };
+      this._documentLibraryOptions = (payload.value || [])
+        .filter((library) => !!library.Title && !AiKnowledgeWorkspaceWebPart._excludedDocumentLibraryTitles.has(library.Title.trim().toLocaleLowerCase()))
+        .map((library) => ({ key: library.Title, text: library.Title }));
+      this._documentLibrariesLoaded = true;
+    } finally {
+      this._isLoadingDocumentLibraries = false;
+      this.context.propertyPane.refresh();
+    }
   }
 
   private _getEnvironmentMessage(): Promise<string> {
@@ -117,9 +159,12 @@ export default class AiKnowledgeWorkspaceWebPart extends BaseClientSideWebPart<I
                 PropertyPaneTextField('description', {
                   label: strings.DescriptionFieldLabel
                 }),
-                PropertyPaneTextField('documentLibraryName', {
-                  label: 'Document library name',
-                  description: 'Default: Litigation Documents'
+                PropertyPaneDropdown('documentLibraryName', {
+                  label: 'Document Library',
+                  options: this._documentLibraryOptions.length > 0
+                    ? this._documentLibraryOptions
+                    : [{ key: '', text: this._isLoadingDocumentLibraries ? 'Loading document libraries…' : 'No document libraries found' }],
+                  disabled: this._isLoadingDocumentLibraries || !this._documentLibrariesLoaded
                 }),
                 PropertyPaneTextField('functionEndpoint', {
                   label: 'AI Function endpoint',
