@@ -35,8 +35,10 @@ export default class AiKnowledgeWorkspaceWebPart extends BaseClientSideWebPart<I
         siteUrl: this.context.pageContext.web.absoluteUrl,
         pageUrl: window.location.href,
         functionEndpoint: this.properties.functionEndpoint || 'http://localhost:7072/api/chat',
+        functionApiResource: 'api://d3df04c0-e580-4684-877a-0733204e7e2e',
         documentLibraryName: this.properties.documentLibraryName || 'Litigation Documents',
-        spHttpClient: this.context.spHttpClient
+        spHttpClient: this.context.spHttpClient,
+        aadHttpClientFactory: this.context.aadHttpClientFactory
       }
     );
 

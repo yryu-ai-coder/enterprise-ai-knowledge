@@ -14,10 +14,13 @@
     "node": "22.22.3"
   },
   "dependencies": {
-    "@azure/functions": "latest"
+    "@azure/functions": "latest",
+    "@azure/identity": "^4.13.2",
+    "@azure/search-documents": "^13.0.0",
+    "pdfjs-dist": "^4.10.38"
   },
   "devDependencies": {
-    "typescript": "latest",
-    "@types/node": "latest"
+    "@types/node": "latest",
+    "typescript": "latest"
   }
 }

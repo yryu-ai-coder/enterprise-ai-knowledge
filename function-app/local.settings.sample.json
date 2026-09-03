@@ -15,6 +15,10 @@
     "OPENAI_MODEL": "gpt-4o-mini",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "FOUNDRY_AGENT_ENDPOINT": "",
-    "FOUNDRY_AGENT_API_KEY": ""
+    "FOUNDRY_AGENT_API_KEY": "",
+    "AZURE_SEARCH_ENDPOINT": "https://YOUR-SEARCH-SERVICE.search.windows.net",
+    "AZURE_SEARCH_INDEX_NAME": "nextcore-library-chunks",
+    "RAG_SHAREPOINT_SITE_URL": "https://YOUR-TENANT.sharepoint.com/sites/YOUR-SITE",
+    "RAG_SHAREPOINT_LIBRARY_NAME": "Litigation Documents"
   }
 }

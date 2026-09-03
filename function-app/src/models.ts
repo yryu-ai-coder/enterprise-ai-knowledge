@@ -17,6 +17,12 @@ export interface SharePointListItemContext {
 
 export type SharePointContextType = 'document-library' | 'sharepoint-list' | 'site-page' | 'current-site';
 
+export interface SelectedDocumentContent {
+  name: string;
+  fileType: string;
+  contentBase64: string;
+}
+
 export interface ChatRequest {
   question: string;
   scenario?: string;
@@ -36,6 +42,7 @@ export interface ChatRequest {
   selectedFiles?: SharePointFileContext[];
   selectedItems?: SharePointListItemContext[];
   documentSnippets?: string[];
+  selectedDocument?: SelectedDocumentContent;
   conversationId?: string;
   knowledgeScope?: string;
 }

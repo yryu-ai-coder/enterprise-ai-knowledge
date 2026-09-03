@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { answerQuestion } from './services/aiProvider';
+import { extractPdfText } from './services/pdfTextExtraction';
 import { ChatRequest, ChatResponse } from './models';
+
+const MAX_SELECTED_PDF_BYTES = 4 * 1024 * 1024;
+const MAX_DOCUMENT_TEXT_CHARS = 16000;
 
 function loadLocalSettings(): void {
   const settingsPath = join(process.cwd(), 'local.settings.json');
@@ -51,7 +55,7 @@ function readBody(request: IncomingMessage): Promise<string> {
     let body = '';
     request.on('data', chunk => {
       body += chunk;
-      if (body.length > 1024 * 1024) {
+      if (body.length > 6 * 1024 * 1024) {
         reject(new Error('Request body too large.'));
       }
     });
@@ -99,6 +103,40 @@ const server = createServer(async (request, response) => {
         return;
       }
 
+      const selectedDocument = body.selectedDocument;
+      let extractedDocumentText = '';
+
+      if (selectedDocument) {
+        if (selectedDocument.fileType?.toLowerCase() !== 'pdf') {
+          sendJson(response, 400, toErrorResponse(requestId, 'This proof of concept currently supports selected PDF files only.'));
+          return;
+        }
+
+        const documentBytes = Buffer.from(selectedDocument.contentBase64 || '', 'base64');
+        if (documentBytes.length === 0) {
+          sendJson(response, 400, toErrorResponse(requestId, 'Selected PDF content is empty.'));
+          return;
+        }
+        if (documentBytes.length > MAX_SELECTED_PDF_BYTES) {
+          sendJson(response, 413, toErrorResponse(requestId, 'Selected PDF exceeds the 4 MB proof-of-concept limit.'));
+          return;
+        }
+
+        const extraction = await extractPdfText(documentBytes);
+        if (extraction.requiresOcr) {
+          sendJson(response, 422, toErrorResponse(requestId, 'No selectable text was found in the selected PDF. OCR is required before Ask AI can analyze it.'));
+          return;
+        }
+        extractedDocumentText = extraction.text.slice(0, MAX_DOCUMENT_TEXT_CHARS);
+      }
+
+      const selectedFiles = (body.selectedFiles || []).map((file) => {
+        if (extractedDocumentText && selectedDocument && file.name === selectedDocument.name) {
+          return { ...file, snippet: extractedDocumentText.slice(0, 800) };
+        }
+        return file;
+      });
+
       const result = await answerQuestion({
         question,
         scenario: body.scenario || 'legal-document-library',
@@ -112,9 +150,11 @@ const server = createServer(async (request, response) => {
         pageUrl: body.pageUrl,
         pageTitle: body.pageTitle,
         pageContext: body.pageContext,
-        selectedFiles: body.selectedFiles || [],
+        selectedFiles,
         selectedItems: body.selectedItems || [],
-        documentSnippets: body.documentSnippets || [],
+        documentSnippets: extractedDocumentText
+          ? [...(body.documentSnippets || []), `Extracted text from ${selectedDocument?.name || 'selected PDF'}:\n${extractedDocumentText}`]
+          : body.documentSnippets || [],
         conversationId: body.conversationId,
         knowledgeScope: body.knowledgeScope || body.scenario || 'legal-document-library'
       }, requestId);

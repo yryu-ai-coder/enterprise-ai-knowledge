@@ -1,4 +1,4 @@
-import { SPHttpClient } from '@microsoft/sp-http';
+import { AadHttpClientFactory, SPHttpClient } from '@microsoft/sp-http';
 
 export interface IAiKnowledgeWorkspaceProps {
   description: string;
@@ -9,6 +9,8 @@ export interface IAiKnowledgeWorkspaceProps {
   siteUrl: string;
   pageUrl: string;
   functionEndpoint: string;
+  functionApiResource: string;
   documentLibraryName: string;
   spHttpClient: SPHttpClient;
+  aadHttpClientFactory: AadHttpClientFactory;
 }

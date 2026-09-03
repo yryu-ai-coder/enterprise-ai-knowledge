@@ -3,10 +3,16 @@
   "solution": {
     "name": "nextcore-ai-knowledge-webpart-client-side-solution",
     "id": "6b7625b9-f82a-4e7b-a210-18f791335538",
-    "version": "1.0.0.0",
+    "version": "1.0.19.0",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,
+    "webApiPermissionRequests": [
+      {
+        "resource": "nextcore-ai-function-api",
+        "scope": "user_impersonation"
+      }
+    ],
     "developer": {
       "name": "",
       "websiteUrl": "",

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { SPHttpClient, SPHttpClientResponse } from '@microsoft/sp-http';
+import { AadHttpClient, SPHttpClient, SPHttpClientResponse } from '@microsoft/sp-http';
 import styles from './AiKnowledgeWorkspace.module.scss';
 import type { IAiKnowledgeWorkspaceProps } from './IAiKnowledgeWorkspaceProps';
 import { escape } from '@microsoft/sp-lodash-subset';
@@ -8,6 +8,16 @@ interface ICitation {
   title: string;
   url: string;
   snippet?: string;
+}
+
+interface IConversationTurn {
+  id: string;
+  question: string;
+  answer?: string;
+  displayedAnswer?: string;
+  citations?: ICitation[];
+  requestId?: string;
+  error?: string;
 }
 
 interface IAskResponse {
@@ -60,6 +70,7 @@ interface IAiKnowledgeWorkspaceState {
   question: string;
   answer: string;
   citations: ICitation[];
+  conversationTurns: IConversationTurn[];
   suggestedActions: string[];
   provider: string;
   requestId: string;
@@ -67,6 +78,11 @@ interface IAiKnowledgeWorkspaceState {
   error: string;
   commandMessage: string;
   isSettingsOpen: boolean;
+  isNewMenuOpen: boolean;
+  isCreateFolderOpen: boolean;
+  newFolderName: string;
+  isCreatingFolder: boolean;
+  confirmationDialog: 'delete' | 'ingest' | '';
   isPreviewOpen: boolean;
   surfaceMode: SurfaceMode;
   documents: ILegalDocument[];
@@ -74,32 +90,34 @@ interface IAiKnowledgeWorkspaceState {
   selectedFolderPath: string;
   selectedParentFolderName: string;
   selectedFileUrl: string;
+  selectedFolderForAction: string;
   viewMode: ViewMode;
   isAiPanelOpen: boolean;
   libraryStatus: LibraryStatus;
   libraryMessage: string;
   backendStatus: 'checking' | 'online' | 'offline';
   backendMessage: string;
+  ragStatus: 'checking' | 'ready' | 'not-indexed' | 'error';
+  ragMessage: string;
+  isIngesting: boolean;
+  ingestionMessage: string;
 }
 
-const legalActions: string[] = [
-  'Summarize selected litigation document',
-  'Extract key dates and deadlines',
-  'Identify parties and claims',
-  'Find missing evidence or open questions',
-  'Draft a case timeline'
-];
+const MAX_SELECTED_PDF_BYTES = 4 * 1024 * 1024;
 
 export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWorkspaceProps, IAiKnowledgeWorkspaceState> {
   private readonly _fileInputRef: React.RefObject<HTMLInputElement> = React.createRef<HTMLInputElement>();
+  private readonly _conversationAreaRef: React.RefObject<HTMLDivElement> = React.createRef<HTMLDivElement>();
+  private _answerRevealTimer: number | undefined;
 
   public constructor(props: IAiKnowledgeWorkspaceProps) {
     super(props);
 
     this.state = {
-      question: 'Summarize selected litigation document',
+      question: '',
       answer: '',
       citations: [],
+      conversationTurns: [],
       suggestedActions: [],
       provider: 'mock',
       requestId: '',
@@ -107,6 +125,11 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       error: '',
       commandMessage: '',
       isSettingsOpen: false,
+      isNewMenuOpen: false,
+      isCreateFolderOpen: false,
+      newFolderName: '',
+      isCreatingFolder: false,
+      confirmationDialog: '',
       isPreviewOpen: false,
       surfaceMode: 'document-library',
       documents: [],
@@ -114,18 +137,30 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedFolderPath: '',
       selectedParentFolderName: '',
       selectedFileUrl: '',
+      selectedFolderForAction: '',
       viewMode: 'parents',
       isAiPanelOpen: false,
       libraryStatus: 'loading',
       libraryMessage: `Loading ${props.documentLibraryName || 'Litigation Documents'}...`,
       backendStatus: 'checking',
-      backendMessage: 'Checking backend health...'
+      backendMessage: 'Checking backend health...',
+      ragStatus: 'checking',
+      ragMessage: 'Checking Azure AI Search RAG...',
+      isIngesting: false,
+      ingestionMessage: 'No library ingestion has run from this workspace yet.'
     };
   }
 
   public componentDidMount(): void {
     this._checkBackendHealth().catch(() => undefined);
+    this._checkRagHealth().catch(() => undefined);
     this._loadLibraryFiles().catch(() => undefined);
+  }
+
+  public componentWillUnmount(): void {
+    if (this._answerRevealTimer !== undefined) {
+      window.clearInterval(this._answerRevealTimer);
+    }
   }
 
   public componentDidUpdate(prevProps: IAiKnowledgeWorkspaceProps): void {
@@ -136,12 +171,37 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
   public render(): React.ReactElement<IAiKnowledgeWorkspaceProps> {
     const selectedFile = this._getSelectedFile();
+    const selectedFolderForAction = this.state.selectedFolderForAction;
+    const deleteTargetName = selectedFile?.name || (selectedFolderForAction ? this._getLastFolderSegment(selectedFolderForAction) : '');
+    const originalLibraryUrl = this._getOriginalLibraryUrl();
 
     return (
       <section className={styles.aiKnowledgeWorkspace}>
         <div className={styles.commandBar}>
           <button className={styles.primaryCommand} type="button" onClick={() => this._openUploadPicker()}>↑ Upload</button>
-          <button className={styles.commandButton} type="button" onClick={() => this._createFolder().catch(() => undefined)}>＋ New</button>
+          <div className={styles.newCommandWrap}>
+            <button
+              className={styles.commandButton}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={this.state.isNewMenuOpen}
+              onClick={() => this.setState((currentState) => ({ isNewMenuOpen: !currentState.isNewMenuOpen }))}
+            >
+              ＋ New <span className={styles.commandChevron} aria-hidden="true" />
+            </button>
+            {this.state.isNewMenuOpen && (
+              <div className={styles.newMenu} role="menu" aria-label="New item menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => this.setState({ isNewMenuOpen: false, isCreateFolderOpen: true, newFolderName: '' })}
+                >
+                  <span className={styles.newMenuIcon}>📁</span>
+                  <span><strong>Folder</strong><small>Create a folder in the current location</small></span>
+                </button>
+              </div>
+            )}
+          </div>
           <button className={styles.commandButton} type="button" onClick={() => this.setState({ isSettingsOpen: true })}>⚙ Settings</button>
           <button
             className={styles.commandButton}
@@ -155,9 +215,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           <button
             className={styles.dangerCommand}
             type="button"
-            disabled={!selectedFile}
-            title={selectedFile ? `Delete ${selectedFile.name}` : 'Select a file before deleting'}
-            onClick={() => this._deleteSelectedFile().catch(() => undefined)}
+            disabled={!selectedFile && !selectedFolderForAction}
+            title={deleteTargetName ? `Delete ${deleteTargetName}` : 'Select a file or folder before deleting'}
+            onClick={() => this._deleteSelectedItem()}
           >
             🗑 Delete
           </button>
@@ -211,6 +271,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                 </div>
                 <h1>{escape(this.props.documentLibraryName)}</h1>
               </div>
+              <a className={styles.openLibraryLink} href={originalLibraryUrl} target="_blank" rel="noreferrer">
+                ↗ Open in SharePoint
+              </a>
             </div>
             {this.state.commandMessage && <div className={styles.commandMessage}>{escape(this.state.commandMessage)}</div>}
 
@@ -218,6 +281,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           </main>
 
           {this.state.isAiPanelOpen && this._renderAiPopup(selectedFile)}
+          {this.state.isCreateFolderOpen && this._renderCreateFolderDialog()}
+          {this.state.confirmationDialog && this._renderConfirmationDialog()}
           {this.state.isSettingsOpen && this._renderSettingsPopup()}
           {this.state.isPreviewOpen && selectedFile && this._renderPreviewPopup(selectedFile)}
         </div>
@@ -227,74 +292,192 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
 
   private _renderAiPopup(selectedFile: ILegalDocument | undefined): React.ReactElement {
+    const isFileAnalysis = Boolean(selectedFile);
+    const scope = isFileAnalysis ? selectedFile!.name : `Entire ${this.props.documentLibraryName} library`;
+    const sampleQuestions = isFileAnalysis
+      ? ['Summarize this document', 'List key dates and deadlines', 'What actions are required?']
+      : ['Find documents about this topic', 'Summarize key next actions', 'Identify important dates and deadlines'];
+    const introduction = isFileAnalysis
+      ? `Ask questions about this file in ${this.props.documentLibraryName}. Get a summary, find key dates, or identify important details.`
+      : `Ask questions across ${this.props.documentLibraryName}. Answers use relevant document evidence and include sources.`;
+    const placeholder = isFileAnalysis
+      ? 'Ask a question about this file…'
+      : 'Describe the document, topic, person, date, or evidence you need…';
+
     return (
-      <div className={styles.aiOverlay} role="dialog" aria-modal="true" aria-label="Ask Legal AI">
+      <div className={styles.aiOverlay} role="dialog" aria-modal="true" aria-label="Ask AI">
         <div className={styles.aiDialog}>
-          <button className={styles.closeButton} type="button" aria-label="Close Ask AI panel" onClick={() => this.setState({ isAiPanelOpen: false })}>×</button>
-  <aside className={styles.aiPanel}>
-        <div className={styles.aiPanelHeader}>
-          <div>
-            <p>ASK LEGAL AI</p>
-            <h2>Document Assistant</h2>
-          </div>
-          <span className={this._getProviderBadgeClass()}>{escape(this.state.provider || 'mock')}</span>
-        </div>
+          <aside className={styles.aiPanel}>
+            <div className={styles.aiPanelHeader}>
+              <div>
+                <h2>Ask AI</h2>
+                <span>{escape(this.props.documentLibraryName)}</span>
+              </div>
+              <button className={styles.closeButton} type="button" aria-label="Close Ask AI panel" onClick={() => this.setState({ isAiPanelOpen: false })}>×</button>
+            </div>
 
-        <div className={styles.selectedBox}>
-          <strong>Selected context</strong>
-          <span>{escape(this._getSelectedContextLabel())}</span>
-        </div>
+            <div className={styles.aiScope}>
+              <span className={styles.aiScopeDot} />
+              <div>
+                <strong>{isFileAnalysis ? 'Selected file' : 'Library search'}</strong>
+                <span>{escape(scope)}</span>
+              </div>
+            </div>
 
-        <div className={styles.actionChips}>
-          {legalActions.slice(0, 3).map((action) => (
-            <button key={action} type="button" onClick={() => this._runSuggestedPrompt(action)}>
-              {action}
-            </button>
-          ))}
-        </div>
+            <div className={styles.aiIntro}>{introduction}</div>
 
-        <label className={styles.questionLabel} htmlFor="ai-question">Question</label>
-        <textarea
-          id="ai-question"
-          className={styles.questionInput}
-          value={this.state.question}
-          onChange={(event) => this.setState({ question: event.currentTarget.value })}
-          placeholder="Ask about selected legal documents..."
-        />
+            <div ref={this._conversationAreaRef} className={styles.conversationArea} aria-live="polite">
+              {this.state.conversationTurns.map((turn) => (
+                <div key={turn.id} className={styles.conversationTurn}>
+                  <div className={styles.questionBubble}>{escape(turn.question)}</div>
+                  {(turn.displayedAnswer || turn.answer) && (
+                    <div className={styles.answerBox}>
+                      <p>{turn.displayedAnswer || turn.answer}</p>
+                      {turn.requestId && <span className={styles.requestId}>Request ID: {escape(turn.requestId)}</span>}
+                    </div>
+                  )}
+                  {turn.error && <div className={styles.errorBox}>{escape(turn.error)}</div>}
+                  {(turn.citations || []).length > 0 && (
+                    <details className={styles.citationBox} open>
+                      <summary>Sources ({turn.citations!.length})</summary>
+                      {turn.citations!.map((citation) => (
+                        <a key={`${turn.id}-${citation.title}-${citation.url}`} href={citation.url} target="_blank" rel="noreferrer">
+                          <strong>{citation.title}</strong>
+                          <span>{citation.snippet || citation.url}</span>
+                        </a>
+                      ))}
+                    </details>
+                  )}
+                </div>
+              ))}
+              {this.state.isLoading && <div className={styles.loadingMessage}>Searching the available document evidence…</div>}
+            </div>
 
-        <button
-          className={styles.askButton}
-          type="button"
-          disabled={this.state.isLoading || !this.state.question.trim()}
-          onClick={() => this._ask(this.state.question).catch(() => undefined)}
-        >
-          {this.state.isLoading ? 'Analyzing...' : 'Ask AI'}
-        </button>
-
-        {this.state.error && <div className={styles.errorBox}>{escape(this.state.error)}</div>}
-
-        <div className={styles.answerBox}>
-          <h3>Response</h3>
-          {this.state.answer ? <p>{this.state.answer}</p> : <p className={styles.placeholder}>Select a file for file-level analysis, or ask from the current library/folder context.</p>}
-          {this.state.requestId && <span className={styles.requestId}>Request ID: {escape(this.state.requestId)}</span>}
-        </div>
-
-        <div className={styles.citationBox}>
-          <h3>Citations</h3>
-          {this.state.citations.length > 0 ? this.state.citations.map((citation) => (
-            <a key={`${citation.title}-${citation.url}`} href={citation.url} target="_blank" rel="noreferrer">
-              <strong>{citation.title}</strong>
-              <span>{citation.snippet || citation.url}</span>
-            </a>
-          )) : <p className={styles.placeholder}>Source-linked citations will appear here.</p>}
-        </div>
-  </aside>
+            <div className={styles.aiComposer}>
+              <div className={styles.sampleQuestions} aria-label="Sample questions">
+                {sampleQuestions.map((sampleQuestion) => (
+                  <button
+                    key={sampleQuestion}
+                    type="button"
+                    onClick={() => {
+                      this.setState({ question: sampleQuestion });
+                      this._ask(sampleQuestion).catch(() => undefined);
+                    }}
+                  >
+                    {sampleQuestion}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                id="ai-question"
+                className={styles.questionInput}
+                value={this.state.question}
+                onChange={(event) => this.setState({ question: event.currentTarget.value })}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && this.state.question.trim() && !this.state.isLoading) {
+                    event.preventDefault();
+                    this._ask(this.state.question).catch(() => undefined);
+                  }
+                }}
+                placeholder={placeholder}
+                aria-label="Message AI"
+              />
+              <div className={styles.composerFooter}>
+                <span>Press Enter to send · Shift + Enter for a new line</span>
+              </div>
+              <p className={styles.aiDisclaimer}>AI-generated content may be incorrect.</p>
+            </div>
+          </aside>
         </div>
       </div>
     );
   }
 
 
+
+  private _renderCreateFolderDialog(): React.ReactElement {
+    const currentLocation = this._getCurrentFolderServerRelativeUrl();
+
+    return (
+      <div className={styles.folderDialogOverlay} role="dialog" aria-modal="true" aria-label="Create new folder">
+        <form className={styles.folderDialog} onSubmit={(event) => { event.preventDefault(); this._createFolder(this.state.newFolderName).catch(() => undefined); }}>
+          <div className={styles.folderDialogHeader}>
+            <div>
+              <span>NEW</span>
+              <h2>Create a folder</h2>
+            </div>
+            <button type="button" className={styles.closeButton} aria-label="Close create folder" onClick={() => this.setState({ isCreateFolderOpen: false, newFolderName: '' })}>×</button>
+          </div>
+          <label className={styles.folderInputLabel} htmlFor="folder-name">Folder name</label>
+          <input
+            id="folder-name"
+            className={styles.folderNameInput}
+            type="text"
+            autoFocus
+            maxLength={128}
+            value={this.state.newFolderName}
+            onChange={(event) => this.setState({ newFolderName: event.currentTarget.value })}
+            placeholder="Enter a folder name"
+          />
+          <div className={styles.folderLocation}>
+            <span>Location</span>
+            <strong>{escape(currentLocation)}</strong>
+          </div>
+          <div className={styles.folderDialogActions}>
+            <button type="button" className={styles.folderCancelButton} onClick={() => this.setState({ isCreateFolderOpen: false, newFolderName: '' })}>Cancel</button>
+            <button type="submit" className={styles.folderCreateButton} disabled={this.state.isCreatingFolder || !this.state.newFolderName.trim()}>
+              {this.state.isCreatingFolder ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  private _renderConfirmationDialog(): React.ReactElement {
+    const isDelete = this.state.confirmationDialog === 'delete';
+    const selectedFile = this._getSelectedFile();
+    const selectedFolderPath = this.state.selectedFolderForAction;
+    const isFolder = !selectedFile && !!selectedFolderPath;
+    const targetName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
+    const title = isDelete ? `Delete ${isFolder ? 'folder' : 'file'}?` : 'Index library text PDFs?';
+    const message = isDelete
+      ? `“${targetName}” will be moved to the SharePoint recycle bin.`
+      : `Index supported text-layer PDFs from ${this.props.documentLibraryName}. Scanned/image PDFs will be reported as OCR required.`;
+    const confirmLabel = isDelete ? 'Move to recycle bin' : 'Start indexing';
+
+    return (
+      <div className={styles.folderDialogOverlay} role="dialog" aria-modal="true" aria-label={title}>
+        <div className={styles.confirmationDialog}>
+          <div className={styles.folderDialogHeader}>
+            <div>
+              <span>{isDelete ? 'CONFIRM DELETE' : 'CONFIRM INDEXING'}</span>
+              <h2>{title}</h2>
+            </div>
+            <button type="button" className={styles.closeButton} aria-label="Close confirmation" onClick={() => this.setState({ confirmationDialog: '' })}>×</button>
+          </div>
+          <p>{message}</p>
+          <div className={styles.folderDialogActions}>
+            <button type="button" className={styles.folderCancelButton} onClick={() => this.setState({ confirmationDialog: '' })}>Cancel</button>
+            <button
+              type="button"
+              className={isDelete ? styles.confirmDeleteButton : styles.folderCreateButton}
+              onClick={() => {
+                this.setState({ confirmationDialog: '' });
+                if (isDelete) {
+                  this._confirmDeleteSelectedItem().catch(() => undefined);
+                } else {
+                  this._confirmLibraryIngest().catch(() => undefined);
+                }
+              }}
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   private _renderPreviewPopup(selectedFile: ILegalDocument): React.ReactElement {
     return (
@@ -333,13 +516,25 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             <span>{escape(this.props.documentLibraryName)}</span>
             <strong>Backend API</strong>
             <span>{escape(this.props.functionEndpoint)}</span>
+            <strong>Azure AI Search RAG</strong>
+            <span>{escape(this.state.ragMessage)}</span>
+            <strong>Library ingestion</strong>
+            <span>{escape(this.state.ingestionMessage)}</span>
             <strong>Current upload target</strong>
             <span>{escape(this._getCurrentFolderServerRelativeUrl())}</span>
             <strong>Loaded metadata</strong>
             <span>{this.state.documents.length} file(s), {this.state.folderPaths.length} folder path(s)</span>
           </div>
-          <button className={styles.askButton} type="button" onClick={() => this._checkBackendHealth().catch(() => undefined)}>
-            Recheck backend health
+          <button
+            className={styles.askButton}
+            type="button"
+            disabled={this.state.isIngesting || this.state.ragStatus === 'error'}
+            onClick={() => this._ingestLibrary()}
+          >
+            {this.state.isIngesting ? 'Indexing text PDFs...' : 'Index text PDFs now'}
+          </button>
+          <button className={styles.askButton} type="button" onClick={() => { this._checkBackendHealth().catch(() => undefined); this._checkRagHealth().catch(() => undefined); }}>
+            Recheck backend and RAG
           </button>
         </div>
       </div>
@@ -360,6 +555,12 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     }
 
     const targetFolder = this._getCurrentFolderServerRelativeUrl();
+    const navigationState: NavigationState = {
+      selectedParentFolderName: this.state.selectedParentFolderName,
+      selectedFolderPath: this.state.selectedFolderPath,
+      selectedFileUrl: this.state.selectedFileUrl,
+      viewMode: this.state.viewMode
+    };
     this.setState({ commandMessage: `Uploading ${files.length} file(s) to ${targetFolder}...` });
 
     try {
@@ -378,8 +579,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         }
       }
 
-      this.setState({ commandMessage: `Uploaded ${files.length} file(s). Refreshing library metadata...` });
-      await this._loadLibraryFiles();
+      this.setState({ commandMessage: `Uploaded ${files.length} file(s). Refreshing the current folder...` });
+      await this._loadLibraryFiles(navigationState);
       this.setState({ commandMessage: `Uploaded ${files.length} file(s) to ${targetFolder}.` });
     } catch (error) {
       this.setState({ commandMessage: (error as Error).message || 'Upload failed.' });
@@ -387,68 +588,80 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
 
-  private async _deleteSelectedFile(): Promise<void> {
+  private _deleteSelectedItem(): void {
     const selectedFile = this._getSelectedFile();
+    const selectedFolderPath = this.state.selectedFolderForAction;
 
-    if (!selectedFile) {
-      this.setState({ commandMessage: 'Select a file before deleting.' });
+    if (!selectedFile && !selectedFolderPath) {
+      this.setState({ commandMessage: 'Select a file or folder before deleting.' });
       return;
     }
 
-    const confirmed = window.confirm(`Move this file to the SharePoint recycle bin?\n\n${selectedFile.name}`);
+    this.setState({ confirmationDialog: 'delete' });
+  }
 
-    if (!confirmed) {
+  private async _confirmDeleteSelectedItem(): Promise<void> {
+    const selectedFile = this._getSelectedFile();
+    const selectedFolderPath = this.state.selectedFolderForAction;
+    const isFolder = !selectedFile && !!selectedFolderPath;
+    const targetName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
+
+    if (!targetName) {
+      this.setState({ commandMessage: 'Select a file or folder before deleting.' });
       return;
     }
 
-    const previousParentFolderName = this.state.selectedParentFolderName;
-    const previousFolderPath = this.state.selectedFolderPath;
-    const previousViewMode = this.state.viewMode;
-
-    this.setState({ commandMessage: `Deleting ${selectedFile.name}...` });
+    const navigationState: NavigationState = {
+      selectedParentFolderName: this.state.selectedParentFolderName,
+      selectedFolderPath: this.state.selectedFolderPath,
+      selectedFileUrl: '',
+      viewMode: this.state.viewMode
+    };
+    this.setState({ commandMessage: `Deleting ${targetName}...` });
 
     try {
-      const endpoint = `${this.props.siteUrl}/_api/web/GetFileByServerRelativeUrl('${this._escapeODataString(selectedFile.serverRelativeUrl)}')/recycle()`;
+      const targetUrl = isFolder ? selectedFolderPath : selectedFile!.serverRelativeUrl;
+      const api = isFolder ? 'GetFolderByServerRelativeUrl' : 'GetFileByServerRelativeUrl';
+      const endpoint = `${this.props.siteUrl}/_api/web/${api}('${this._escapeODataString(targetUrl)}')/recycle()`;
       const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, {
-        headers: {
-          Accept: 'application/json;odata=nometadata'
-        }
+        headers: { Accept: 'application/json;odata=nometadata' }
       });
 
       if (!response.ok) {
-        throw new Error(`Delete failed for ${selectedFile.name} (${response.status} ${response.statusText}).`);
+        throw new Error(`Delete failed for ${targetName} (${response.status} ${response.statusText}).`);
       }
 
-      await this._loadLibraryFiles({
-        selectedParentFolderName: previousParentFolderName,
-        selectedFolderPath: previousFolderPath,
-        selectedFileUrl: '',
-        viewMode: previousViewMode
-      });
+      await this._loadLibraryFiles(navigationState);
       this.setState({
         isPreviewOpen: false,
+        selectedFolderForAction: '',
         answer: '',
         citations: [],
         suggestedActions: [],
         requestId: '',
-        commandMessage: `Moved to recycle bin: ${selectedFile.name}`
+        commandMessage: `Moved to recycle bin: ${targetName}`
       });
     } catch (error) {
       this.setState({ commandMessage: (error as Error).message || 'Delete failed.' });
     }
   }
 
-  private async _createFolder(): Promise<void> {
+  private async _createFolder(folderName: string): Promise<void> {
     const parentFolder = this._getCurrentFolderServerRelativeUrl();
-    const folderName = window.prompt(`New folder name under:\n${parentFolder}`);
+    const cleanFolderName = folderName.trim().replace(/[\\/:*?"<>|]/g, '-');
 
-    if (!folderName || !folderName.trim()) {
+    if (!cleanFolderName) {
       return;
     }
 
-    const cleanFolderName = folderName.trim().replace(/[\\/:*?"<>|]/g, '-');
     const newFolderPath = `${parentFolder}/${cleanFolderName}`;
-    this.setState({ commandMessage: `Creating folder ${cleanFolderName}...` });
+    const navigationState: NavigationState = {
+      selectedFolderPath: this.state.selectedFolderPath,
+      selectedParentFolderName: this.state.selectedParentFolderName,
+      selectedFileUrl: this.state.selectedFileUrl,
+      viewMode: this.state.viewMode
+    };
+    this.setState({ isCreatingFolder: true, commandMessage: `Creating folder ${cleanFolderName}...` });
 
     try {
       const endpoint = `${this.props.siteUrl}/_api/web/folders/add('${this._escapeODataString(newFolderPath)}')`;
@@ -462,10 +675,18 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         throw new Error(`Folder creation failed (${response.status} ${response.statusText}).`);
       }
 
-      await this._loadLibraryFiles();
-      this.setState({ commandMessage: `Created folder: ${cleanFolderName}` });
+      await this._loadLibraryFiles(navigationState);
+      this.setState({
+        isCreatingFolder: false,
+        isCreateFolderOpen: false,
+        newFolderName: '',
+        commandMessage: `Created folder: ${cleanFolderName}`
+      });
     } catch (error) {
-      this.setState({ commandMessage: (error as Error).message || 'Folder creation failed.' });
+      this.setState({
+        isCreatingFolder: false,
+        commandMessage: (error as Error).message || 'Folder creation failed.'
+      });
     }
   }
 
@@ -504,7 +725,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       return <div className={styles.errorBox}>{escape(this.state.libraryMessage)}</div>;
     }
 
-    if (this.state.documents.length === 0) {
+    if (this.state.documents.length === 0 && this.state.folderPaths.length === 0) {
       return <div className={styles.noticeBox}>No files found. Upload documents to {escape(this.props.documentLibraryName)} and click Refresh.</div>;
     }
 
@@ -534,14 +755,23 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         {this._getParentFolderNames().map((parentName) => {
           const files = this._getDocumentsForParentFolder(parentName);
           const latest = files[0]?.lastModified || '';
+          const folderPath = this._getServerRelativePathForParent(parentName);
+          const isFolderSelected = this.state.selectedFolderForAction === folderPath;
 
           return (
-            <button className={styles.tableRow} key={parentName} type="button" onClick={() => this._selectParentFolder(parentName)}>
-              <span className={styles.selectCircle} />
-              <span className={styles.nameCell}><span className={styles.folderGlyph}>📁</span>{escape(parentName)}</span>
+            <div className={isFolderSelected ? styles.tableRowActive : styles.tableRow} key={parentName}>
+              <button
+                className={isFolderSelected ? styles.selectCircleActive : styles.selectCircleButton}
+                type="button"
+                aria-label={`Select folder ${parentName}`}
+                onClick={() => this.setState({ selectedFolderForAction: isFolderSelected ? '' : folderPath, selectedFileUrl: '' })}
+              />
+              <button className={styles.nameCellButton} type="button" onClick={() => this._selectParentFolder(parentName)}>
+                <span className={styles.folderGlyph}>📁</span>{escape(parentName)}
+              </button>
               <span>{files.length}</span>
               <span>{escape(latest)}</span>
-            </button>
+            </div>
           );
         })}
         {rootDocuments.map((doc) => this._renderFileRow(doc, selectedFile, false))}
@@ -567,14 +797,22 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         {childFolders.map((folderPath) => {
           const files = this._getDocumentsForFolderTree(folderPath);
           const latest = files[0]?.lastModified || '';
+          const isFolderSelected = this.state.selectedFolderForAction === folderPath;
 
           return (
-            <button className={styles.tableRow} key={folderPath} type="button" onClick={() => this._selectFolder(folderPath)}>
-              <span className={styles.selectCircle} />
-              <span className={styles.nameCell}><span className={styles.folderGlyph}>📁</span>{escape(this._getLastFolderSegment(folderPath))}</span>
+            <div className={isFolderSelected ? styles.tableRowActive : styles.tableRow} key={folderPath}>
+              <button
+                className={isFolderSelected ? styles.selectCircleActive : styles.selectCircleButton}
+                type="button"
+                aria-label={`Select folder ${this._getLastFolderSegment(folderPath)}`}
+                onClick={() => this.setState({ selectedFolderForAction: isFolderSelected ? '' : folderPath, selectedFileUrl: '' })}
+              />
+              <button className={styles.nameCellButton} type="button" onClick={() => this._selectFolder(folderPath)}>
+                <span className={styles.folderGlyph}>📁</span>{escape(this._getLastFolderSegment(folderPath))}
+              </button>
               <span>{files.length}</span>
               <span>{escape(latest)}</span>
-            </button>
+            </div>
           );
         })}
         {directFiles.map((doc) => this._renderFileRow(doc, selectedFile, false))}
@@ -626,13 +864,13 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           className={isSelected ? styles.selectCircleActive : styles.selectCircleButton}
           type="button"
           aria-label={`Select ${doc.name}`}
-          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath })}
+          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath, selectedFolderForAction: '', conversationTurns: [] })}
         />
         <button
           className={styles.nameCellButton}
           type="button"
           title={`Preview ${doc.name}`}
-          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath, isPreviewOpen: true })}
+          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath, selectedFolderForAction: '', isPreviewOpen: true, conversationTurns: [] })}
         >
           <span className={styles.fileGlyph}>{this._getFileGlyph(doc.type)}</span>
           <span>{escape(doc.name)}</span>
@@ -667,7 +905,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
     try {
       const escapedLibraryName = libraryName.replace(/'/g, "''");
-      const endpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')/items?$select=Id,FileLeafRef,FileRef,FileDirRef,File_x0020_Type,Modified,FSObjType,Editor/Title&$expand=Editor&$filter=FSObjType eq 0&$orderby=FileDirRef asc,Modified desc&$top=200`;
+      const endpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')/items?$select=Id,FileLeafRef,FileRef,FileDirRef,File_x0020_Type,Modified,FSObjType,Editor/Title&$expand=Editor&$orderby=FileDirRef asc,Modified desc&$top=200`;
       const response: SPHttpClientResponse = await this.props.spHttpClient.get(endpoint, SPHttpClient.configurations.v1);
 
       if (!response.ok) {
@@ -675,8 +913,14 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       }
 
       const payload = await response.json() as ISharePointListResponse;
-      const documents = (payload.value || []).map(item => this._mapFileItem(item, libraryName));
-      const folderPaths = this._getUniqueFolderPaths(documents);
+      const items = payload.value || [];
+      const documents = items
+        .filter((item) => item.FSObjType === 0)
+        .map(item => this._mapFileItem(item, libraryName));
+      const explicitFolderPaths = items
+        .filter((item) => item.FSObjType === 1 && !!item.FileRef)
+        .map((item) => item.FileRef);
+      const folderPaths = this._getUniqueFolderPaths(documents, explicitFolderPaths);
 
       this.setState({
         documents,
@@ -728,6 +972,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedParentFolderName: parentFolderName,
       selectedFolderPath: '',
       selectedFileUrl: '',
+      selectedFolderForAction: '',
       viewMode: 'children',
       answer: '',
       citations: [],
@@ -743,6 +988,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     this.setState({
       selectedFolderPath: folderPath,
       selectedFileUrl: firstFileInFolder?.url || '',
+      selectedFolderForAction: '',
       viewMode: 'files',
       answer: '',
       citations: [],
@@ -752,14 +998,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     });
   }
 
-  private _runSuggestedPrompt(action: string): void {
-    this.setState({ question: action });
-    this._ask(action).catch(() => undefined);
-  }
-
-  private _getUniqueFolderPaths(documents: ILegalDocument[]): string[] {
-    return documents
-      .map(doc => doc.folderPath)
+  private _getUniqueFolderPaths(documents: ILegalDocument[], explicitFolderPaths: string[] = []): string[] {
+    return [...documents.map(doc => doc.folderPath), ...explicitFolderPaths]
       .filter((folderPath, index, allPaths) => folderPath && allPaths.indexOf(folderPath) === index)
       .sort((a, b) => this._formatFolderName(a).localeCompare(this._formatFolderName(b)));
   }
@@ -934,6 +1174,15 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     return this._getLibraryRootServerRelativeUrl();
   }
 
+  private _getOriginalLibraryUrl(): string {
+    const serverRelativeUrl = this._getLibraryRootServerRelativeUrl();
+    try {
+      return `${new URL(this.props.siteUrl).origin}${serverRelativeUrl}`;
+    } catch {
+      return `${this.props.siteUrl.replace(/\/$/, '')}/${this.props.documentLibraryName}`;
+    }
+  }
+
   private _getLibraryRootServerRelativeUrl(): string {
     const firstFolderPath = this.state.folderPaths[0] || this.state.documents[0]?.folderPath || '';
     const marker = `/${this.props.documentLibraryName}`;
@@ -996,11 +1245,16 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     const healthEndpoint = this._getHealthEndpoint();
 
     try {
-      const response = await fetch(healthEndpoint, { method: 'GET' });
+      const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
+      const response = await apiClient.fetch(healthEndpoint, AadHttpClient.configurations.v1, { method: 'GET' });
+      if (!response.ok) {
+        throw new Error(`Backend health check returned ${response.status} ${response.statusText || 'without a response body'}.`);
+      }
+
       const result = await response.json() as { ok?: boolean; service?: string; provider?: string };
 
-      if (!response.ok || !result.ok) {
-        throw new Error(`Health check returned ${response.status}`);
+      if (!result.ok) {
+        throw new Error('Backend health check returned an invalid success response.');
       }
 
       this.setState({
@@ -1023,6 +1277,100 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       .replace('/api/ask', '/api/health');
   }
 
+  private _getRagHealthEndpoint(): string {
+    return this.props.functionEndpoint
+      .replace('/api/chat', '/api/rag/health')
+      .replace('/api/ask', '/api/rag/health');
+  }
+
+  private _getRagIngestEndpoint(): string {
+    return this.props.functionEndpoint
+      .replace('/api/chat', '/api/rag/ingest')
+      .replace('/api/ask', '/api/rag/ingest');
+  }
+
+  private _getRagAnswerEndpoint(): string {
+    return this.props.functionEndpoint
+      .replace('/api/chat', '/api/rag/answer')
+      .replace('/api/ask', '/api/rag/answer');
+  }
+
+  private _ingestLibrary(): void {
+    this.setState({ confirmationDialog: 'ingest' });
+  }
+
+  private async _confirmLibraryIngest(): Promise<void> {
+    this.setState({ isIngesting: true, ingestionMessage: `Indexing text PDFs from ${this.props.documentLibraryName}...` });
+    try {
+      const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
+      const response = await apiClient.fetch(this._getRagIngestEndpoint(), AadHttpClient.configurations.v1, { method: 'POST' });
+      const payload = await response.json() as {
+        error?: string;
+        detail?: string;
+        ingestion?: {
+          discoveredFiles: number;
+          indexedDocuments: number;
+          indexedChunks: number;
+          skippedUnsupported: number;
+          skippedTooLarge: number;
+          requiresOcr: number;
+          failedFiles: Array<{ name: string; reason: string }>;
+        };
+      };
+      if (!response.ok || !payload.ingestion) {
+        throw new Error(payload.detail || payload.error || `Library ingestion returned ${response.status}.`);
+      }
+
+      const ingestion = payload.ingestion;
+      this.setState({
+        isIngesting: false,
+        ragStatus: ingestion.indexedChunks > 0 ? 'ready' : this.state.ragStatus,
+        ingestionMessage: `Indexed ${ingestion.indexedChunks} chunk(s) from ${ingestion.indexedDocuments}/${ingestion.discoveredFiles} file(s). OCR required: ${ingestion.requiresOcr}; unsupported: ${ingestion.skippedUnsupported}; over size limit: ${ingestion.skippedTooLarge}; failed: ${ingestion.failedFiles.length}.`
+      });
+      await this._checkRagHealth();
+    } catch (error) {
+      this.setState({
+        isIngesting: false,
+        ingestionMessage: (error as Error).message || 'Library ingestion failed.'
+      });
+    }
+  }
+
+  private async _checkRagHealth(): Promise<void> {
+    try {
+      const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
+      const response = await apiClient.fetch(this._getRagHealthEndpoint(), AadHttpClient.configurations.v1, { method: 'GET' });
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const failure = await response.json() as { error?: string; detail?: string };
+          detail = failure.detail || failure.error || '';
+        } catch {
+          detail = '';
+        }
+        throw new Error(`RAG health check returned ${response.status} ${response.statusText || 'without a response body'}${detail ? `: ${detail}` : '.'}`);
+      }
+
+      const result = await response.json() as { ok?: boolean; rag?: { configured?: boolean; indexName?: string; indexExists?: boolean } };
+      if (!result.ok || !result.rag?.configured) {
+        throw new Error('Azure AI Search RAG is not configured.');
+      }
+
+      this.setState({
+        ragStatus: result.rag.indexExists ? 'ready' : 'not-indexed',
+        ragMessage: result.rag.indexExists
+          ? `Azure AI Search connected: ${result.rag.indexName || 'library index'} is ready.`
+          : `Azure AI Search connected: ${result.rag.indexName || 'library index'} will be created during ingestion.`
+      });
+    } catch (error) {
+      this.setState({
+        ragStatus: 'error',
+        ragMessage: (error as Error).message || 'Azure AI Search RAG health check failed.'
+      });
+    }
+  }
+
   private _getStatusDotClass(): string {
     if (this.state.backendStatus === 'online') {
       return styles.statusDotOnline;
@@ -1039,23 +1387,128 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     return this.state.provider === 'offline' ? styles.providerBadgeOffline : styles.providerBadge;
   }
 
+  private async _getSelectedPdfPayload(selectedFile: ILegalDocument | undefined): Promise<{ name: string; fileType: string; contentBase64: string } | undefined> {
+    if (!selectedFile) {
+      return undefined;
+    }
+
+    if (selectedFile.type.toLowerCase() !== 'pdf') {
+      throw new Error('This proof of concept currently supports selected PDF files only.');
+    }
+
+    const response: SPHttpClientResponse = await this.props.spHttpClient.get(selectedFile.url, SPHttpClient.configurations.v1, {
+      headers: { Accept: 'application/pdf' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Unable to read ${selectedFile.name} from SharePoint (${response.status} ${response.statusText}).`);
+    }
+
+    const fileBytes = new Uint8Array(await (await response.blob()).arrayBuffer());
+    if (fileBytes.byteLength > MAX_SELECTED_PDF_BYTES) {
+      throw new Error(`${selectedFile.name} exceeds the 4 MB proof-of-concept limit.`);
+    }
+
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < fileBytes.length; offset += chunkSize) {
+      const chunk = Array.from(fileBytes.subarray(offset, offset + chunkSize));
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+
+    return {
+      name: selectedFile.name,
+      fileType: 'pdf',
+      contentBase64: window.btoa(binary)
+    };
+  }
+
+  private _scrollConversationToBottom(): void {
+    const conversationArea = this._conversationAreaRef.current;
+    if (!conversationArea) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      conversationArea.scrollTo({ top: conversationArea.scrollHeight, behavior: 'smooth' });
+    });
+  }
+
+  private _revealAnswer(turnId: string, result: IAskResponse): void {
+    if (this._answerRevealTimer !== undefined) {
+      window.clearInterval(this._answerRevealTimer);
+    }
+
+    const answer = result.answer || '';
+    const revealChunkSize = 14;
+    let visibleLength = 0;
+
+    const revealNextChunk = (): void => {
+      visibleLength = Math.min(answer.length, visibleLength + revealChunkSize);
+      const isComplete = visibleLength >= answer.length;
+      const displayedAnswer = answer.slice(0, visibleLength);
+
+      this.setState((currentState) => ({
+        answer: isComplete ? answer : '',
+        citations: isComplete ? result.citations || [] : [],
+        suggestedActions: isComplete ? result.suggestedActions || [] : [],
+        provider: result.provider || 'mock',
+        requestId: isComplete ? result.requestId || '' : '',
+        isLoading: !isComplete,
+        conversationTurns: currentState.conversationTurns.map((turn) => turn.id === turnId
+          ? {
+            ...turn,
+            displayedAnswer,
+            answer: isComplete ? answer : undefined,
+            citations: isComplete ? result.citations || [] : [],
+            requestId: isComplete ? result.requestId || '' : ''
+          }
+          : turn)
+      }), () => this._scrollConversationToBottom());
+
+      if (isComplete && this._answerRevealTimer !== undefined) {
+        window.clearInterval(this._answerRevealTimer);
+        this._answerRevealTimer = undefined;
+      }
+    };
+
+    revealNextChunk();
+    if (visibleLength < answer.length) {
+      this._answerRevealTimer = window.setInterval(revealNextChunk, 28);
+    }
+  }
+
   private async _ask(question: string): Promise<void> {
     const trimmedQuestion = question.trim();
+    const turnId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     if (!trimmedQuestion) {
       return;
     }
 
     const selectedFile = this._getSelectedFile();
-
-    const contextFiles = selectedFile ? [selectedFile] : this._getActiveContextDocuments().slice(0, 20);
-    const contextSnippets = contextFiles.slice(0, 5).map(doc => doc.snippet);
+    const useLibraryRag = !selectedFile && this.state.surfaceMode === 'document-library';
+    const contextFiles = selectedFile ? [selectedFile] : [];
+    const contextSnippets = contextFiles.map(doc => doc.snippet);
     const activeFolderPath = selectedFile?.folderPath || this._getActiveFolderPathForAsk();
 
-    this.setState({ isLoading: true, error: '', answer: '', citations: [], suggestedActions: [], requestId: '' });
+    this.setState((currentState) => ({
+      isLoading: true,
+      error: '',
+      question: '',
+      answer: '',
+      citations: [],
+      suggestedActions: [],
+      requestId: '',
+      conversationTurns: [...currentState.conversationTurns, { id: turnId, question: trimmedQuestion }]
+    }));
 
     try {
-      const response = await fetch(this.props.functionEndpoint, {
+      const selectedDocument = selectedFile ? await this._getSelectedPdfPayload(selectedFile) : undefined;
+      const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
+      const response = await apiClient.fetch(
+        useLibraryRag ? this._getRagAnswerEndpoint() : this.props.functionEndpoint,
+        AadHttpClient.configurations.v1, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1078,30 +1531,39 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           selectedFiles: contextFiles,
           selectedItems: [],
           documentSnippets: contextSnippets,
-          knowledgeScope: 'legal-document-library'
+          selectedDocument,
+          knowledgeScope: useLibraryRag ? 'library-wide-rag' : 'legal-document-library'
         })
       });
 
-      const result = await response.json() as IAskResponse;
-
-      if (!response.ok || result.status === 'error') {
-        throw new Error(result.error || `Backend returned ${response.status}`);
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const failure = await response.json() as IAskResponse;
+          detail = failure.error || '';
+        } catch {
+          detail = '';
+        }
+        throw new Error(detail || `Backend returned ${response.status} ${response.statusText || 'without a response body'}.`);
       }
 
-      this.setState({
-        answer: result.answer,
-        citations: result.citations || [],
-        suggestedActions: result.suggestedActions || [],
-        provider: result.provider || 'mock',
-        requestId: result.requestId || '',
-        isLoading: false
-      });
+      const result = await response.json() as IAskResponse;
+
+      if (result.status === 'error') {
+        throw new Error(result.error || 'Backend returned an error response.');
+      }
+
+      this._revealAnswer(turnId, result);
     } catch (error) {
-      this.setState({
-        error: (error as Error).message || 'Unable to reach the AI backend.',
+      const message = (error as Error).message || 'Unable to reach the AI backend.';
+      this.setState((currentState) => ({
+        error: '',
         provider: 'offline',
-        isLoading: false
-      });
+        isLoading: false,
+        conversationTurns: currentState.conversationTurns.map((turn) => turn.id === turnId
+          ? { ...turn, error: message }
+          : turn)
+      }));
     }
   }
 }
