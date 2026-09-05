@@ -15,6 +15,7 @@ export interface LibraryChunk {
   documentName: string;
   documentUrl: string;
   folderPath: string;
+  folderAncestors?: string[];
   fileType: string;
   lastModified: string;
   chunkOrdinal: number;
@@ -55,6 +56,7 @@ export function getLibraryChunkIndexDefinition(indexName: string): SearchIndex {
       { name: 'documentName', type: 'Edm.String', searchable: true, filterable: true, sortable: true, facetable: true },
       { name: 'documentUrl', type: 'Edm.String', filterable: true },
       { name: 'folderPath', type: 'Edm.String', searchable: true, filterable: true, facetable: true },
+      { name: 'folderAncestors', type: 'Collection(Edm.String)', filterable: true },
       { name: 'fileType', type: 'Edm.String', filterable: true, facetable: true },
       { name: 'lastModified', type: 'Edm.String', filterable: true, sortable: true },
       { name: 'chunkOrdinal', type: 'Edm.Int32', filterable: true, sortable: true },
@@ -65,7 +67,7 @@ export function getLibraryChunkIndexDefinition(indexName: string): SearchIndex {
 }
 
 export function doesLibraryChunkIndexRequireSchemaUpdate(existingIndex: SearchIndex): boolean {
-  return !['siteUrl', 'libraryId', 'libraryName', 'pageNumber', 'sourceLabel'].every(requiredField => existingIndex.fields.some((field) => field.name === requiredField));
+  return !['siteUrl', 'libraryId', 'libraryName', 'folderAncestors', 'pageNumber', 'sourceLabel'].every(requiredField => existingIndex.fields.some((field) => field.name === requiredField));
 }
 
 export async function ensureLibraryChunkIndex(): Promise<RagSearchConfiguration> {
@@ -150,7 +152,10 @@ export function createDocumentNamesFilter(documentNames: string[]): string {
 export function createFolderPathFilter(folderPath: string): string {
   const normalizedFolderPath = folderPath.trim().replace(/\/$/, '');
   if (!normalizedFolderPath) throw new Error('folderPath is required for current-folder search.');
-  return `folderPath eq '${escapeODataString(normalizedFolderPath)}'`;
+  const escapedFolderPath = escapeODataString(normalizedFolderPath);
+  const escapedDescendantPrefix = escapeODataString(`${normalizedFolderPath}/`);
+  const escapedDescendantUpperBound = escapeODataString(`${normalizedFolderPath}0`);
+  return `(folderAncestors/any(path: path eq '${escapedFolderPath}') or folderPath eq '${escapedFolderPath}' or (folderPath ge '${escapedDescendantPrefix}' and folderPath lt '${escapedDescendantUpperBound}'))`;
 }
 
 export function getSearchTextForLibrarySearch(query: string, matchAll = false): string {
@@ -177,12 +182,20 @@ export async function searchLibraryChunks(query: string, options: LibrarySearchO
   const response = await client.search(getSearchTextForLibrarySearch(query, options.matchAll), {
     top,
     filter: createLibraryScopedFilter(options.libraryId, documentFilter),
-    select: ['id', 'content', 'siteUrl', 'libraryId', 'libraryName', 'documentName', 'documentUrl', 'folderPath', 'fileType', 'lastModified', 'chunkOrdinal', 'pageNumber', 'sourceLabel']
+    select: ['id', 'content', 'siteUrl', 'libraryId', 'libraryName', 'documentName', 'documentUrl', 'folderPath', 'folderAncestors', 'fileType', 'lastModified', 'chunkOrdinal', 'pageNumber', 'sourceLabel']
   });
 
   const results: LibrarySearchResult[] = [];
   for await (const item of response.results) {
-    results.push({ ...item.document, score: item.score });
+    const document = item.document;
+    const pageNumber = typeof document.pageNumber === 'number' && Number.isInteger(document.pageNumber) && document.pageNumber > 0
+      ? document.pageNumber
+      : undefined;
+    results.push({
+      ...document,
+      ...(pageNumber === undefined ? { pageNumber: undefined } : { pageNumber }),
+      score: item.score
+    });
   }
 
   return results;

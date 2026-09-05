@@ -33,13 +33,38 @@ export function validateRenameName(value: string, currentName: string): RenameNa
   return { valid: true, value: trimmedValue };
 }
 
+export interface IRenameRequest {
+  headers: { [key: string]: string };
+  body?: string;
+}
+
+export function buildRenameRequest(itemType: RenameItemType, newName: string): IRenameRequest {
+  if (itemType === 'folder') {
+    return {
+      headers: {
+        Accept: 'application/json;odata=nometadata',
+        'Content-Type': 'application/json;odata=nometadata',
+        'If-Match': '*',
+        'X-HTTP-Method': 'MERGE'
+      },
+      body: JSON.stringify({ FileLeafRef: newName })
+    };
+  }
+
+  return { headers: { Accept: 'application/json;odata=nometadata' } };
+}
+
 export function buildRenameEndpoint(siteUrl: string, itemType: RenameItemType, sourceServerRelativeUrl: string, newName: string): string {
   const sourcePath = sourceServerRelativeUrl.replace(/\/+$/, '');
+  const normalizedSiteUrl = siteUrl.replace(/\/$/, '');
+  const api = itemType === 'folder' ? 'GetFolderByServerRelativeUrl' : 'GetFileByServerRelativeUrl';
+
+  if (itemType === 'folder') {
+    return `${normalizedSiteUrl}/_api/web/${api}('${escapeODataString(sourcePath)}')/ListItemAllFields`;
+  }
+
   const parentPath = sourcePath.substring(0, sourcePath.lastIndexOf('/'));
   const destinationPath = `${parentPath}/${newName}`;
-  const api = itemType === 'folder' ? 'GetFolderByServerRelativeUrl' : 'GetFileByServerRelativeUrl';
-  const normalizedSiteUrl = siteUrl.replace(/\/$/, '');
-
   return `${normalizedSiteUrl}/_api/web/${api}('${escapeODataString(sourcePath)}')/MoveTo(newurl='${escapeODataString(destinationPath)}',flags=0)`;
 }
 

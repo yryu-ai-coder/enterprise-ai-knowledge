@@ -12,8 +12,8 @@
     {
       "groupId": "5c03119e-3074-46fd-976b-c60198311f70",
       "group": { "default": "Advanced" },
-      "title": { "default": "Document Library" },
-      "description": { "default": "Reusable AI assistant panel for legal documents, SharePoint lists, and site pages" },
+      "title": { "default": "Ask AI Document Library" },
+      "description": { "default": "Reusable AI assistant for document libraries, SharePoint lists, and site pages" },
       "officeFabricIconFontName": "Page",
       "properties": {
         "documentLibraryName": "",

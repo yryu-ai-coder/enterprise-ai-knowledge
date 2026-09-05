@@ -33,6 +33,7 @@ function buildSystemPrompt(): string {
     '- Do not mention Azure AI Search, Graph, metadata, snippets, or implementation details unless the user explicitly asks how the system works.',
     '- Never invent citations. Cite only selected files or supplied context.',
     '- If the supplied evidence is insufficient, say what information is missing in user-facing language without describing the system architecture.',
+    '- If the request mode is library-inventory-overview, summarize only the distinct documents supplied. Begin with “확인된 N개 문서 기준” using the number shown in the evidence. Never claim “most”, “mainly”, “all”, or describe a whole folder/library beyond those supplied documents.',
     '- For spreadsheet or budget questions, use only explicitly supplied cell values. Align a value with its column header; a YEAR/total value is never a monthly value. A blank actual-month cell means that month has no entered actual and must not be reported as an overrun. State the planned amount, actual amount, and calculated difference before naming a largest variance. If the retrieved worksheet evidence cannot support the calculation, say so instead of estimating.'
   ].join('\n');
 }
@@ -76,7 +77,8 @@ function buildCitations(request: ChatRequest): Citation[] {
   const selectedFiles = request.selectedFiles || [];
 
   if (selectedFiles.length > 0) {
-    return selectedFiles.slice(0, 5).map(file => ({
+    const citationLimit = request.mode === 'library-inventory-overview' ? 20 : 5;
+    return selectedFiles.slice(0, citationLimit).map(file => ({
       title: file.name,
       url: file.url || request.siteUrl || '',
       snippet: file.snippet || `Metadata context from ${file.libraryTitle || request.libraryName || 'SharePoint document library'}.`

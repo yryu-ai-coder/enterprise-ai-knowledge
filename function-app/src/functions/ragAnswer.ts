@@ -1,7 +1,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions';
 import { ChatRequest } from '../models';
 import { answerQuestion } from '../services/aiProvider';
-import { buildDeterministicBudgetForecastAnswer, buildGroundedLibraryRequest, hasDeterministicSpreadsheetAnalysis, prioritizeDeterministicSpreadsheetAnalysis, requiresDeterministicBudgetAnalysis } from '../services/ragAnswerService';
+import { buildDeterministicBudgetForecastAnswer, buildDeterministicHba1cAnswer, buildGroundedLibraryRequest, ensureInventoryEvidencePrefix, expandRetrievalQuery, hasDeterministicSpreadsheetAnalysis, isAbnormalLabResultsQuestion, isDocumentInventoryQuestion, isExplicitHba1cQuestion, isExplicitSpreadsheetSelection, prioritizeDeterministicSpreadsheetAnalysis, requiresDeterministicBudgetAnalysis } from '../services/ragAnswerService';
 import { resolveRequestedLibraryDrive } from '../services/ragIngestionService';
 import { searchLibraryChunks, shouldFallbackToSelectedDocumentChunks } from '../services/ragSearchService';
 
@@ -39,6 +39,10 @@ app.http('rag-answer', {
       const selectedDocumentName = body.selectedFiles?.[0]?.name?.trim();
       const selectedFileType = body.selectedFiles?.[0]?.fileType?.trim().toLowerCase();
       const retrievalTop = selectedFileType === 'xlsx' ? 20 : undefined;
+      const isInventoryOverview = isDocumentInventoryQuestion(question);
+      const isExplicitHba1c = isExplicitHba1cQuestion(question);
+      const isAbnormalLabResults = isAbnormalLabResultsQuestion(question);
+      const inventoryRetrievalTop = isInventoryOverview ? 1_000 : retrievalTop;
       const requestedFolderScope = body.knowledgeScope === 'current-folder-rag'
         ? normalizeCurrentFolderPath(body.folderPath, resolvedLibrary.libraryName)
         : undefined;
@@ -46,21 +50,22 @@ app.http('rag-answer', {
         throw new Error('The requested folder must belong to the selected document library.');
       }
       const isCurrentFolderScope = Boolean(requestedFolderScope && requestedFolderScope.toLowerCase() !== `/${resolvedLibrary.libraryName}`.toLowerCase());
-      let results = await searchLibraryChunks(question, selectedDocumentUrl
-        ? { libraryId: resolvedLibrary.libraryId, documentUrl: selectedDocumentUrl, top: retrievalTop }
+      const retrievalQuery = isInventoryOverview ? '*' : expandRetrievalQuery(question);
+      let results = await searchLibraryChunks(retrievalQuery, selectedDocumentUrl
+        ? { libraryId: resolvedLibrary.libraryId, documentUrl: selectedDocumentUrl, matchAll: isInventoryOverview, top: inventoryRetrievalTop }
         : selectedDocumentNames.length > 1
-          ? { libraryId: resolvedLibrary.libraryId, documentNames: selectedDocumentNames, top: retrievalTop }
+          ? { libraryId: resolvedLibrary.libraryId, documentNames: selectedDocumentNames, matchAll: isInventoryOverview, top: inventoryRetrievalTop }
           : isCurrentFolderScope
-            ? { libraryId: resolvedLibrary.libraryId, folderPath: requestedFolderScope!, top: retrievalTop }
-            : { libraryId: resolvedLibrary.libraryId, top: retrievalTop });
+            ? { libraryId: resolvedLibrary.libraryId, folderPath: requestedFolderScope!, matchAll: isInventoryOverview, top: inventoryRetrievalTop }
+            : { libraryId: resolvedLibrary.libraryId, matchAll: isInventoryOverview, top: inventoryRetrievalTop });
       if (selectedDocumentNames.length > 1 && results.length === 0) {
-        results = await searchLibraryChunks(question, { libraryId: resolvedLibrary.libraryId, documentNames: selectedDocumentNames, matchAll: true, top: retrievalTop });
+        results = await searchLibraryChunks(retrievalQuery, { libraryId: resolvedLibrary.libraryId, documentNames: selectedDocumentNames, matchAll: true, top: retrievalTop });
       }
       if (shouldFallbackToSelectedDocumentChunks(selectedDocumentUrl, results.length)) {
-        results = await searchLibraryChunks(question, { libraryId: resolvedLibrary.libraryId, documentUrl: selectedDocumentUrl, matchAll: true, top: retrievalTop });
+        results = await searchLibraryChunks(retrievalQuery, { libraryId: resolvedLibrary.libraryId, documentUrl: selectedDocumentUrl, matchAll: true, top: retrievalTop });
       }
       if (selectedDocumentNames.length <= 1 && shouldFallbackToSelectedDocumentChunks(selectedDocumentName, results.length)) {
-        results = await searchLibraryChunks(question, { libraryId: resolvedLibrary.libraryId, documentName: selectedDocumentName, matchAll: true, top: retrievalTop });
+        results = await searchLibraryChunks(retrievalQuery, { libraryId: resolvedLibrary.libraryId, documentName: selectedDocumentName, matchAll: true, top: retrievalTop });
       }
       if (isCurrentFolderScope && results.length === 0) {
         results = await searchLibraryChunks('*', {
@@ -70,10 +75,11 @@ app.http('rag-answer', {
           top: retrievalTop
         });
       }
-      const selectedDocumentIsSpreadsheet = selectedFileType === 'xlsx'
-        || Boolean(selectedDocumentName?.toLowerCase().endsWith('.xlsx'))
-        || selectedDocumentNames.some(name => name.toLowerCase().endsWith('.xlsx'))
-        || results.some(result => result.fileType.toLowerCase() === 'xlsx');
+      const selectedDocumentIsSpreadsheet = isExplicitSpreadsheetSelection(
+        selectedFileType,
+        selectedDocumentName,
+        selectedDocumentNames
+      );
       if (selectedDocumentIsSpreadsheet && selectedDocumentUrl) {
         // A document can contain many raw-sheet chunks before the final analysis
         // section. Inspect a bounded full selected-document set, never the library.
@@ -123,6 +129,26 @@ app.http('rag-answer', {
       const groundedResults = selectedDocumentIsSpreadsheet
         ? prioritizeDeterministicSpreadsheetAnalysis(results)
         : results;
+      const deterministicHba1cAnswer = isExplicitHba1c || isAbnormalLabResults
+        ? buildDeterministicHba1cAnswer(question, groundedResults)
+        : undefined;
+      if (deterministicHba1cAnswer && isExplicitHba1c) {
+        return {
+          status: 200,
+          jsonBody: {
+            answer: deterministicHba1cAnswer.answer,
+            citations: [{
+              title: deterministicHba1cAnswer.source.documentName,
+              url: deterministicHba1cAnswer.source.documentUrl,
+              snippet: deterministicHba1cAnswer.source.content.slice(0, 800)
+            }],
+            provider: 'rag-search',
+            requestId,
+            status: 'success',
+            metadata: { retrievalCount: groundedResults.length, knowledgeScope: 'library-wide-rag', deterministicLabResult: 'hba1c' }
+          }
+        };
+      }
       const deterministicForecastAnswer = selectedDocumentIsSpreadsheet
         ? buildDeterministicBudgetForecastAnswer(question, groundedResults)
         : undefined;
@@ -146,10 +172,16 @@ app.http('rag-answer', {
       }
       const groundedRequest = buildGroundedLibraryRequest({ ...body, question }, groundedResults);
       const response = await answerQuestion(groundedRequest, requestId);
+      const answerWithVerifiedHba1c = isAbnormalLabResults && deterministicHba1cAnswer && !response.answer.includes(deterministicHba1cAnswer.answer)
+        ? `${response.answer}\n\n${deterministicHba1cAnswer.answer}`
+        : response.answer;
       return {
         status: 200,
         jsonBody: {
           ...response,
+          answer: isInventoryOverview
+            ? ensureInventoryEvidencePrefix(answerWithVerifiedHba1c, groundedRequest.selectedFiles?.length || 0)
+            : answerWithVerifiedHba1c,
           metadata: {
             ...(response.metadata || {}),
             retrievalCount: results.length,

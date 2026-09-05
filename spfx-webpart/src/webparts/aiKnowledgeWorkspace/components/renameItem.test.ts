@@ -1,4 +1,4 @@
-import { buildRenameEndpoint, validateRenameName } from './renameItem';
+import { buildRenameEndpoint, buildRenameRequest, validateRenameName } from './renameItem';
 
 describe('rename item helpers', () => {
   it('accepts a trimmed valid name that differs from the current name', () => {
@@ -18,9 +18,28 @@ describe('rename item helpers', () => {
     );
   });
 
-  it('builds a non-overwriting folder MoveTo request', () => {
+  it('builds a folder ListItemAllFields endpoint because folders do not support MoveTo', () => {
     expect(buildRenameEndpoint('https://contoso.sharepoint.com/sites/legal/', 'folder', '/sites/legal/Documents/Discovery', 'Evidence')).toBe(
-      "https://contoso.sharepoint.com/sites/legal/_api/web/GetFolderByServerRelativeUrl('/sites/legal/Documents/Discovery')/MoveTo(newurl='/sites/legal/Documents/Evidence',flags=0)"
+      "https://contoso.sharepoint.com/sites/legal/_api/web/GetFolderByServerRelativeUrl('/sites/legal/Documents/Discovery')/ListItemAllFields"
     );
+  });
+
+  it('uses a MERGE body to rename a folder ListItemAllFields name', () => {
+    expect(buildRenameRequest('folder', 'Evidence')).toEqual({
+      headers: {
+        Accept: 'application/json;odata=nometadata',
+        'Content-Type': 'application/json;odata=nometadata',
+        'If-Match': '*',
+        'X-HTTP-Method': 'MERGE'
+      },
+      body: JSON.stringify({ FileLeafRef: 'Evidence' })
+    });
+  });
+
+  it('uses the native file MoveTo request without a body', () => {
+    expect(buildRenameRequest('file', 'Final.docx')).toEqual({
+      headers: { Accept: 'application/json;odata=nometadata' },
+      body: undefined
+    });
   });
 });

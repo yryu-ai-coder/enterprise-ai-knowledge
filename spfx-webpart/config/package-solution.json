@@ -3,7 +3,7 @@
   "solution": {
     "name": "nextcore-ai-knowledge-webpart-client-side-solution",
     "id": "6b7625b9-f82a-4e7b-a210-18f791335538",
-    "version": "1.0.57.0",
+    "version": "1.0.65.0",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,

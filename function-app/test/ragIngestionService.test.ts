@@ -22,7 +22,7 @@ test('buildLibraryChunks assigns stable Search-safe ids and preserves file citat
     libraryName: 'Litigation Documents',
     name: 'consultation.pdf',
     documentUrl: 'https://youngryu.sharepoint.com/sites/enterprise-ai-knowledge/Litigation%20Documents/consultation.pdf',
-    folderPath: '/Litigation Documents',
+    folderPath: '/Litigation Documents/01_Legal_Official/1-2026_02_18',
     fileType: 'pdf',
     lastModified: '2026-09-03T12:00:00Z',
     text: 'First part of the source document. Second part of the source document.',
@@ -34,6 +34,11 @@ test('buildLibraryChunks assigns stable Search-safe ids and preserves file citat
   assert.notEqual(chunks[0].id, chunks[1].id);
   assert.equal(chunks[0].documentName, 'consultation.pdf');
   assert.equal(chunks[0].documentUrl.includes('consultation.pdf'), true);
+  assert.deepEqual(chunks[0].folderAncestors, [
+    '/Litigation Documents',
+    '/Litigation Documents/01_Legal_Official',
+    '/Litigation Documents/01_Legal_Official/1-2026_02_18'
+  ]);
   assert.equal(chunks[0].chunkOrdinal, 0);
   assert.equal(chunks[1].chunkOrdinal, 1);
 });

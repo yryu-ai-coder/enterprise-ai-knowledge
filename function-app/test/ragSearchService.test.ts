@@ -32,10 +32,10 @@ test('createDocumentNameFilter provides an exact selected-file fallback without 
   );
 });
 
-test('createFolderPathFilter keeps current-folder retrieval inside one exact indexed folder', () => {
+test('createFolderPathFilter includes current and descendant paths while retaining a legacy-index fallback', () => {
   assert.equal(
     createFolderPathFilter("/Litigation Documents/04 Office RAG Test/Client's files"),
-    "folderPath eq '/Litigation Documents/04 Office RAG Test/Client''s files'"
+    "(folderAncestors/any(path: path eq '/Litigation Documents/04 Office RAG Test/Client''s files') or folderPath eq '/Litigation Documents/04 Office RAG Test/Client''s files' or (folderPath ge '/Litigation Documents/04 Office RAG Test/Client''s files/' and folderPath lt '/Litigation Documents/04 Office RAG Test/Client''s files0'))"
   );
 });
 
@@ -59,6 +59,15 @@ test('LibraryChunk Search schema makes optional pageNumber filterable and sortab
     type: 'Edm.Int32',
     filterable: true,
     sortable: true
+  });
+});
+
+test('LibraryChunk Search schema stores folder ancestors for descendant-folder filtering', () => {
+  const schema = getLibraryChunkIndexDefinition('test-index');
+  assert.deepEqual(schema.fields.find(field => field.name === 'folderAncestors'), {
+    name: 'folderAncestors',
+    type: 'Collection(Edm.String)',
+    filterable: true
   });
 });
 

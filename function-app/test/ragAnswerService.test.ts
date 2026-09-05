@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDeterministicBudgetForecastAnswer, buildGroundedLibraryRequest, prioritizeDeterministicSpreadsheetAnalysis, requiresDeterministicBudgetAnalysis } from '../src/services/ragAnswerService';
+import { buildDeterministicBudgetForecastAnswer, buildDeterministicHba1cAnswer, buildGroundedLibraryRequest, ensureInventoryEvidencePrefix, expandRetrievalQuery, isAbnormalLabResultsQuestion, isDocumentInventoryQuestion, isExplicitHba1cQuestion, isExplicitSpreadsheetSelection, prioritizeDeterministicSpreadsheetAnalysis, requiresDeterministicBudgetAnalysis } from '../src/services/ragAnswerService';
 
 test('buildGroundedLibraryRequest converts retrieved chunks into bounded source-linked chat context', () => {
   const request = buildGroundedLibraryRequest(
@@ -29,6 +29,78 @@ test('buildGroundedLibraryRequest converts retrieved chunks into bounded source-
   assert.match(request.documentSnippets?.[0] || '', /Retrieved excerpt from consultation\.pdf/);
 });
 
+test('expands a Korean HbA1c question with the English text-layer PDF terms', () => {
+  assert.equal(
+    expandRetrievalQuery('이 폴더 문서안에서 당화혈색소 수치가 있으면 알려줘'),
+    '이 폴더 문서안에서 당화혈색소 수치가 있으면 알려줘 HbA1c Hemoglobin A1c glycated hemoglobin'
+  );
+  assert.equal(expandRetrievalQuery('이 폴더의 검사 결과를 요약해줘'), '이 폴더의 검사 결과를 요약해줘');
+  assert.equal(
+    expandRetrievalQuery('선택된 문서에서 피검사 결과 비정상적인 범위에 있는 수치 알려줘'),
+    '선택된 문서에서 피검사 결과 비정상적인 범위에 있는 수치 알려줘 High Low Abnormal Positive Hemoglobin A1c HbA1c'
+  );
+  assert.equal(isAbnormalLabResultsQuestion('선택된 문서에서 피검사 결과 비정상적인 범위에 있는 수치 알려줘'), true);
+  assert.equal(isExplicitHba1cQuestion('당화혈색소 수치를 알려줘'), true);
+  assert.equal(isExplicitHba1cQuestion('비정상적인 검사 결과를 알려줘'), false);
+});
+
+test('uses the flagged Hemoglobin A1c result instead of the first normal-range boundary', () => {
+  const result = buildDeterministicHba1cAnswer('당화혈색소 수치를 알려줘', [{
+    id: 'a1c',
+    content: 'HEMOGLOBIN A1C Results Hemoglobin A1c Normal range: 4.8 - 5.6 % Prediabetes: 5.7 - 6.4 4.8 4.8 5.6 5.6 6.1 High',
+    documentName: 'test-details.pdf', documentUrl: 'https://contoso/test-details.pdf', folderPath: '/Patient Documents', fileType: 'pdf', lastModified: '', chunkOrdinal: 0
+  }]);
+
+  assert.equal(result?.answer, 'PDF에 표시된 Hemoglobin A1c 결과는 6.1%이며 High로 표시되어 있습니다. 참고 범위는 4.8–5.6%입니다.');
+  assert.equal(result?.source.documentName, 'test-details.pdf');
+});
+
+test('labels inventory answers with the confirmed indexed-document count', () => {
+  assert.equal(
+    ensureInventoryEvidencePrefix('혈액검사 관련 PDF가 확인됩니다.', 5),
+    '확인된 5개 인덱싱 문서 기준: 혈액검사 관련 PDF가 확인됩니다.'
+  );
+  assert.equal(
+    ensureInventoryEvidencePrefix('확인된 5개 인덱싱 문서 기준: 혈액검사 관련 PDF가 확인됩니다.', 5),
+    '확인된 5개 인덱싱 문서 기준: 혈액검사 관련 PDF가 확인됩니다.'
+  );
+});
+
+test('library and folder inventory questions use the overview retrieval path', () => {
+  assert.equal(isDocumentInventoryQuestion('이 라이브러이에는 주로 어떤 종류의 문서들이 있어?'), true);
+  assert.equal(isDocumentInventoryQuestion('이 폴더에는 어떤 파일이 있나요?'), true);
+  assert.equal(isDocumentInventoryQuestion('문서 유형별로 어떤 파일들이 확인되나요?'), true);
+  assert.equal(isDocumentInventoryQuestion('인덱싱된 파일 목록을 보여줘.'), true);
+  assert.equal(isDocumentInventoryQuestion('전자송달 증명서는 언제 제출되었나요?'), false);
+});
+
+test('only an explicitly selected workbook enables deterministic spreadsheet handling', () => {
+  assert.equal(isExplicitSpreadsheetSelection(undefined, undefined, []), false);
+  assert.equal(isExplicitSpreadsheetSelection('', undefined, []), false);
+  assert.equal(isExplicitSpreadsheetSelection('xlsx', undefined, []), true);
+  assert.equal(isExplicitSpreadsheetSelection(undefined, 'Business expense budget-Excel.xlsx', []), true);
+  assert.equal(isExplicitSpreadsheetSelection(undefined, undefined, ['first.pdf', 'budget.xlsx']), true);
+});
+
+test('buildGroundedLibraryRequest preserves distinct documents for an inventory overview', () => {
+  const results = Array.from({ length: 7 }, (_, index) => ({
+    id: `overview-${index}`,
+    content: `Document ${index + 1} evidence`,
+    documentName: `document-${index + 1}.pdf`,
+    documentUrl: `https://contoso/document-${index + 1}.pdf`,
+    folderPath: '/Litigation Documents/01_Legal_Official',
+    fileType: 'pdf',
+    lastModified: '2026-09-04T12:00:00Z',
+    chunkOrdinal: index
+  }));
+  const request = buildGroundedLibraryRequest({ question: '이 폴더에는 어떤 문서가 있나요?', libraryName: 'Litigation Documents' }, results);
+
+  assert.equal(request.mode, 'library-inventory-overview');
+  assert.equal(request.selectedFiles?.length, 7);
+  assert.equal(request.documentSnippets?.length, 7);
+  assert.match(request.documentSnippets?.[0] || '', /7 distinct indexed documents/);
+});
+
 test('buildGroundedLibraryRequest preserves an OCR source page in its citation-facing source label', () => {
   const request = buildGroundedLibraryRequest(
     { question: 'What is on the scanned page?', libraryName: 'Litigation Documents' },
@@ -42,6 +114,22 @@ test('buildGroundedLibraryRequest preserves an OCR source page in its citation-f
   assert.equal(request.selectedFiles?.[0].name, 'scan.pdf · p. 3');
   assert.match(request.selectedFiles?.[0].snippet || '', /^Page 3 —/);
   assert.match(request.documentSnippets?.[0] || '', /scan\.pdf \(page 3;/);
+});
+
+test('buildGroundedLibraryRequest omits a null page label from a text-layer PDF citation', () => {
+  const request = buildGroundedLibraryRequest(
+    { question: 'What does this PDF say?', libraryName: 'Litigation Documents' },
+    [{
+      id: 'text-pdf', content: 'Text-layer PDF evidence.', documentName: 'text.pdf',
+      documentUrl: 'https://youngryu.sharepoint.com/text.pdf', folderPath: '/Litigation Documents',
+      fileType: 'pdf', lastModified: '2026-09-03T12:00:00Z', chunkOrdinal: 0,
+      pageNumber: null as unknown as number
+    }]
+  );
+
+  assert.equal(request.selectedFiles?.[0].name, 'text.pdf');
+  assert.doesNotMatch(request.selectedFiles?.[0].snippet || '', /Page null/);
+  assert.doesNotMatch(request.documentSnippets?.[0] || '', /page null/);
 });
 
 test('buildGroundedLibraryRequest retains section, slide, and worksheet citations', () => {

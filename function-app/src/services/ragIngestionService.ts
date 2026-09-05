@@ -132,6 +132,13 @@ function createChunkId(driveItemId: string, chunkOrdinal: number): string {
   return hash.startsWith('_') ? `k${hash}` : hash;
 }
 
+export function getFolderAncestorPaths(folderPath: string): string[] {
+  const normalizedFolderPath = folderPath.trim().replace(/\/$/, '');
+  if (!normalizedFolderPath) return [];
+  const segments = normalizedFolderPath.split('/').filter(Boolean);
+  return segments.map((_, index) => `/${segments.slice(0, index + 1).join('/')}`);
+}
+
 export function buildLibraryChunks(source: SourceDocumentForChunks): LibraryChunk[] {
   const chunkOrdinalOffset = source.chunkOrdinalOffset ?? 0;
   return chunkDocumentText(source.text, source.chunkOptions).map((content, chunkIndex) => {
@@ -145,6 +152,7 @@ export function buildLibraryChunks(source: SourceDocumentForChunks): LibraryChun
       documentName: source.name,
       documentUrl: source.documentUrl,
       folderPath: source.folderPath,
+      folderAncestors: getFolderAncestorPaths(source.folderPath),
       fileType: source.fileType,
       lastModified: source.lastModified,
       chunkOrdinal,

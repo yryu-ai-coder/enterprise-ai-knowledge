@@ -1,5 +1,6 @@
 import * as React from 'react';
 import * as ReactDOM from 'react-dom';
+import JSZip from 'jszip';
 import { AadHttpClient, SPHttpClient, SPHttpClientResponse } from '@microsoft/sp-http';
 import styles from './AiKnowledgeWorkspace.module.scss';
 import type { IAiKnowledgeWorkspaceProps } from './IAiKnowledgeWorkspaceProps';
@@ -7,11 +8,13 @@ import { escape } from '@microsoft/sp-lodash-subset';
 import { formatOcrIngestionMessage, getOcrIngestEndpoint, IOcrIngestionResult } from './ocrIngestion';
 import { buildListItemSelect } from './documentLibraryColumns';
 import type { IDocumentLibraryDisplayColumn } from './documentLibraryColumns';
-import { buildRenameEndpoint, RenameItemType, validateRenameName } from './renameItem';
+import { buildRenameEndpoint, buildRenameRequest, RenameItemType, validateRenameName } from './renameItem';
 import { formatAnswerForDisplay } from './answerPresentation';
-import { getSelectionCommandState, toggleSelection } from './librarySelection';
+import { formatCitationSnippet } from './citationPresentation';
+import { getFolderOpenSelection, getSelectionCommandState, toggleSelection } from './librarySelection';
 import { getFileIconKind } from './fileIcon';
 import { shouldDeferQuestionSubmitForComposition, shouldSubmitQuestionOnEnter } from './questionSubmission';
+import { buildFolderSummaryQuestion } from './folderSummary';
 
 interface ICitation {
   title: string;
@@ -102,6 +105,7 @@ interface IAiKnowledgeWorkspaceState {
   isRenameOpen: boolean;
   renameName: string;
   isRenaming: boolean;
+  isDownloading: boolean;
   confirmationDialog: 'delete' | 'ingest-text' | 'ingest-ocr' | '';
   isPreviewOpen: boolean;
   surfaceMode: SurfaceMode;
@@ -116,6 +120,7 @@ interface IAiKnowledgeWorkspaceState {
   selectedFolderPaths: string[];
   viewMode: ViewMode;
   isAiPanelOpen: boolean;
+  aiPanelWidth: number;
   libraryStatus: LibraryStatus;
   libraryMessage: string;
   backendStatus: 'checking' | 'online' | 'offline';
@@ -137,6 +142,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   private _answerRevealTimer: number | undefined;
   private _commandMessageTimer: number | undefined;
   private _submitAfterComposition = false;
+  private _isResizingAiPanel = false;
+  private _aiResizeStartX = 0;
+  private _aiResizeStartWidth = 560;
   private readonly _conversationHistoryByScope: Record<string, IConversationTurn[]> = {};
 
   public constructor(props: IAiKnowledgeWorkspaceProps) {
@@ -161,6 +169,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       isRenameOpen: false,
       renameName: '',
       isRenaming: false,
+      isDownloading: false,
       confirmationDialog: '',
       isPreviewOpen: false,
       surfaceMode: 'document-library',
@@ -175,6 +184,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedFolderPaths: [],
       viewMode: 'parents',
       isAiPanelOpen: false,
+      aiPanelWidth: 560,
       libraryStatus: 'loading',
       libraryMessage: props.documentLibraryName ? `Loading ${props.documentLibraryName}...` : 'Select a document library in the Web Part properties.',
       backendStatus: 'checking',
@@ -201,6 +211,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     if (this._commandMessageTimer !== undefined) {
       window.clearTimeout(this._commandMessageTimer);
     }
+    window.removeEventListener('mousemove', this._resizeAiPanel);
+    window.removeEventListener('mouseup', this._endAiPanelResize);
   }
 
   public componentDidUpdate(prevProps: IAiKnowledgeWorkspaceProps, prevState: IAiKnowledgeWorkspaceState): void {
@@ -399,6 +411,15 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           <button
             className={styles.commandButton}
             type="button"
+            disabled={!selectionCommandState.canDownload || this.state.isDownloading}
+            title={selectionCommandState.downloadTitle}
+            onClick={() => this._downloadSelectedFiles().catch(() => undefined)}
+          >
+            {this.state.isDownloading ? '↓ Preparing…' : '↓ Download'}
+          </button>
+          <button
+            className={styles.commandButton}
+            type="button"
             disabled={!selectionCommandState.canRename}
             title={selectionCommandState.renameTitle}
             onClick={() => this._openRenameDialog()}
@@ -468,23 +489,59 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     const selectedDocuments = this.state.documents.filter((document) => this.state.selectedFileUrls.indexOf(document.url) >= 0);
     const documentForSummary = selectedFile || (selectedDocuments.length === 1 ? selectedDocuments[0] : undefined);
 
+    const activeFolderPath = this.state.selectedFolderPath;
+    if (!documentForSummary && activeFolderPath) {
+      const folderDocuments = this._getDocumentsForFolderTree(activeFolderPath);
+      const folderName = this._formatFolderName(activeFolderPath);
+      return (
+        <aside className={styles.documentSummary} aria-label="Folder details">
+          <header className={styles.documentSummaryHeader}><h2>Folder details</h2><span>Folder and subfolders</span></header>
+          <div className={styles.summaryFile}><span className={styles.fileGlyph}>▣</span><div><strong>{escape(folderName)}</strong><span>{folderDocuments.length} file(s) in this folder</span></div></div>
+          <div className={styles.summaryBody}><h3>ASK AI</h3><p>Generate a summary or ask questions about the files in this folder.</p><div className={styles.summaryActions}><button type="button" onClick={() => this._openFolderSummaryAsk(activeFolderPath, true)}>Generate summary</button><button className={styles.summaryAskButton} type="button" onClick={() => this._openFolderSummaryAsk(activeFolderPath, false)}>Ask AI</button></div></div>
+        </aside>
+      );
+    }
+
     if (!documentForSummary) {
       return (
-        <aside className={styles.documentSummary} aria-label="Document Summary">
-          <header className={styles.documentSummaryHeader}><h2>Document Summary</h2><span>Select a document to view its context</span></header>
-          <div className={styles.documentSummaryEmpty}>Select one PDF to see its document details and generate an evidence-grounded summary.</div>
+        <aside className={styles.documentSummary} aria-label="Details">
+          <header className={styles.documentSummaryHeader}><h2>Details</h2><span>Select a file or folder</span></header>
+          <div className={styles.documentSummaryEmpty}>Select a file to view its details, generate a summary, or ask AI questions.</div>
         </aside>
       );
     }
 
     return (
-      <aside className={styles.documentSummary} aria-label="Document Summary">
-        <header className={styles.documentSummaryHeader}><h2>Document Summary</h2><span>Selected document context</span></header>
-        <div className={styles.summaryFile}><span className={styles.fileGlyph}>{this._renderFileGlyph(documentForSummary.type)}</span><div><strong>{escape(documentForSummary.name)}</strong><span>{escape(documentForSummary.type.toUpperCase())} · Indexed document</span></div></div>
+      <aside className={styles.documentSummary} aria-label="File details">
+        <header className={styles.documentSummaryHeader}><h2>File details</h2><span>Selected file</span></header>
+        <div className={styles.summaryFile}><span className={styles.fileGlyph}>{this._renderFileGlyph(documentForSummary.type)}</span><div><strong>{escape(documentForSummary.name)}</strong><span>{escape(documentForSummary.type.toUpperCase())} file</span></div></div>
         <div className={styles.summaryMetadata}><div><span>MODIFIED</span><strong>{escape(documentForSummary.lastModified)}</strong></div><div><span>MODIFIED BY</span><strong>{escape(documentForSummary.modifiedBy || '—')}</strong></div></div>
-        <div className={styles.summaryBody}><h3>AI SUMMARY</h3><p>Generate a concise, evidence-grounded summary for this selected document. Sources stay visible in Ask AI.</p><ul><li>Selected-file scope is preserved.</li><li>OCR page citations are retained when available.</li><li>Conversation history remains browser-session only.</li></ul><div className={styles.summaryActions}><button type="button" onClick={() => this._openSummaryAsk(documentForSummary, 'Summarize this document')}>Generate summary</button><button className={styles.summaryAskButton} type="button" onClick={() => this._openSummaryAsk(documentForSummary)}>Ask AI</button></div></div>
+        <div className={styles.summaryBody}><h3>ASK AI</h3><p>Generate a summary or ask questions about this file.</p><div className={styles.summaryActions}><button type="button" onClick={() => this._openSummaryAsk(documentForSummary, 'Summarize this document')}>Generate summary</button><button className={styles.summaryAskButton} type="button" onClick={() => this._openSummaryAsk(documentForSummary)}>Ask AI</button></div></div>
       </aside>
     );
+  }
+
+  private _getFolderConversationScopeKey(folderPath: string): string {
+    return `folder:${folderPath}`;
+  }
+
+  private _openFolderSummaryAsk(folderPath: string, generateSummary: boolean): void {
+    const question = buildFolderSummaryQuestion(this._formatFolderName(folderPath));
+    const folderScopeKey = this._getFolderConversationScopeKey(folderPath);
+    const folderSelection = getFolderOpenSelection();
+    this._saveConversationHistory(this.state.selectedFileUrl, this.state.conversationTurns);
+    this.setState({
+      selectedFolderPath: folderPath,
+      selectedFileUrl: folderScopeKey,
+      selectedFileUrls: folderSelection.selectedFileUrls,
+      selectedFolderPaths: folderSelection.selectedFolderPaths,
+      selectedFolderForAction: '',
+      isAiPanelOpen: true,
+      question: generateSummary ? question : '',
+      conversationTurns: this._getConversationHistory(folderScopeKey)
+    }, () => {
+      if (generateSummary) this._ask(question).catch(() => undefined);
+    });
   }
 
   private _openSummaryAsk(document: ILegalDocument, question?: string): void {
@@ -500,6 +557,28 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       if (question) this._ask(question).catch(() => undefined);
     });
   }
+
+  private _beginAiPanelResize = (event: React.MouseEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    this._isResizingAiPanel = true;
+    this._aiResizeStartX = event.clientX;
+    this._aiResizeStartWidth = this.state.aiPanelWidth;
+    window.addEventListener('mousemove', this._resizeAiPanel);
+    window.addEventListener('mouseup', this._endAiPanelResize);
+  };
+
+  private _resizeAiPanel = (event: MouseEvent): void => {
+    if (!this._isResizingAiPanel) return;
+    const maxWidth = Math.max(420, Math.min(1_000, window.innerWidth - 48));
+    const width = Math.max(420, Math.min(maxWidth, this._aiResizeStartWidth + this._aiResizeStartX - event.clientX));
+    this.setState({ aiPanelWidth: width });
+  };
+
+  private _endAiPanelResize = (): void => {
+    this._isResizingAiPanel = false;
+    window.removeEventListener('mousemove', this._resizeAiPanel);
+    window.removeEventListener('mouseup', this._endAiPanelResize);
+  };
 
   private _renderAiPopup(selectedFile: ILegalDocument | undefined): React.ReactElement {
     const selectedDocuments = this.state.documents.filter((document) => this.state.selectedFileUrls.indexOf(document.url) >= 0);
@@ -539,7 +618,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     // Office suite bar and the edit footer.
     return ReactDOM.createPortal(
       <div className={overlayClassName} style={sharePointFontFamily ? { fontFamily: sharePointFontFamily } : undefined} role="dialog" aria-modal="true" aria-label="Ask AI">
-        <div className={styles.aiDialog}>
+        <div className={styles.aiDialog} style={{ width: `${this.state.aiPanelWidth}px` }}>
+          <div className={styles.aiResizeHandle} role="separator" aria-label="Resize Ask AI panel" aria-orientation="vertical" onMouseDown={this._beginAiPanelResize} />
           <aside className={styles.aiPanel}>
             <div className={styles.aiPanelHeader}>
               <div>
@@ -576,7 +656,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                       {turn.citations!.map((citation) => (
                         <a key={`${turn.id}-${citation.title}-${citation.url}`} href={citation.url} target="_blank" rel="noreferrer">
                           <strong>{citation.title}</strong>
-                          <span>{citation.snippet || citation.url}</span>
+                          <span>{formatCitationSnippet(citation.snippet || citation.url)}</span>
                         </a>
                       ))}
                     </details>
@@ -954,9 +1034,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
     try {
       const endpoint = buildRenameEndpoint(this.props.siteUrl, itemType, sourceServerRelativeUrl, validation.value);
-      const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, {
-        headers: { Accept: 'application/json;odata=nometadata' }
-      });
+      const request = buildRenameRequest(itemType, validation.value);
+      const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, request);
 
       if (!response.ok) {
         throw new Error(`Rename failed for ${currentName} (${response.status} ${response.statusText}).`);
@@ -989,6 +1068,77 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       return `${new URL(this.props.siteUrl).origin}${serverRelativeUrl}`;
     } catch {
       return `${this.props.siteUrl.replace(/\/$/, '')}${serverRelativeUrl}`;
+    }
+  }
+
+  private _triggerBrowserDownload(blob: Blob, fileName: string): void {
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = fileName;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+  }
+
+  private _getDownloadFileName(): string {
+    const date = new Date().toISOString().slice(0, 10);
+    const libraryName = (this.props.documentLibraryName || 'documents').replace(/[\\/:*?"<>|]/g, '-');
+    return `${libraryName}-${date}.zip`;
+  }
+
+  private async _downloadSelectedFiles(): Promise<void> {
+    const selectedFiles = this.state.selectedFileUrls
+      .map((fileUrl) => this.state.documents.find((document) => document.url === fileUrl))
+      .filter((document): document is ILegalDocument => !!document);
+
+    if (selectedFiles.length === 0) {
+      this.setState({ commandMessage: 'Select one or more files before downloading.' });
+      return;
+    }
+
+    this.setState({
+      isDownloading: true,
+      commandMessage: selectedFiles.length === 1 ? `Downloading ${selectedFiles[0].name}...` : `Preparing ZIP for ${selectedFiles.length} selected files...`
+    });
+
+    try {
+      const downloadedFiles: Array<{ name: string; blob: Blob }> = [];
+      const usedNames: Record<string, number> = {};
+      for (const document of selectedFiles) {
+        const endpoint = `${this.props.siteUrl}/_api/web/GetFileByServerRelativeUrl('${this._escapeODataString(document.serverRelativeUrl)}')/$value`;
+        const response = await this.props.spHttpClient.get(endpoint, SPHttpClient.configurations.v1);
+        if (!response.ok) {
+          throw new Error(`Download failed for ${document.name} (${response.status} ${response.statusText}).`);
+        }
+
+        const originalName = document.name;
+        const duplicateNumber = (usedNames[originalName] || 0) + 1;
+        usedNames[originalName] = duplicateNumber;
+        const extensionIndex = originalName.lastIndexOf('.');
+        const uniqueName = duplicateNumber === 1 ? originalName : extensionIndex > 0
+          ? `${originalName.slice(0, extensionIndex)} (${duplicateNumber})${originalName.slice(extensionIndex)}`
+          : `${originalName} (${duplicateNumber})`;
+        downloadedFiles.push({ name: uniqueName, blob: await response.blob() });
+      }
+
+      if (downloadedFiles.length === 1) {
+        this._triggerBrowserDownload(downloadedFiles[0].blob, downloadedFiles[0].name);
+        this.setState({ commandMessage: `Download started: ${downloadedFiles[0].name}` });
+      } else {
+        const zip = new JSZip();
+        downloadedFiles.forEach((file) => zip.file(file.name, file.blob));
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const zipName = this._getDownloadFileName();
+        this._triggerBrowserDownload(zipBlob, zipName);
+        this.setState({ commandMessage: `ZIP download started: ${zipName} (${downloadedFiles.length} files).` });
+      }
+    } catch (error) {
+      this.setState({ commandMessage: (error as Error).message || 'Download failed.' });
+    } finally {
+      this.setState({ isDownloading: false });
     }
   }
 
@@ -1467,14 +1617,14 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private _selectFolder(folderPath: string): void {
-    const firstFileInFolder = this._getDocumentsForFolder(folderPath)[0];
+    const folderSelection = getFolderOpenSelection();
 
     this.setState({
       selectedFolderPath: folderPath,
-      selectedFileUrl: firstFileInFolder?.url || '',
+      selectedFileUrl: folderSelection.selectedFileUrl,
       selectedFolderForAction: '',
-      selectedFileUrls: firstFileInFolder ? [firstFileInFolder.url] : [],
-      selectedFolderPaths: [],
+      selectedFileUrls: folderSelection.selectedFileUrls,
+      selectedFolderPaths: folderSelection.selectedFolderPaths,
       viewMode: 'files',
       answer: '',
       citations: [],
