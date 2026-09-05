@@ -1,8 +1,17 @@
 import * as React from 'react';
+import * as ReactDOM from 'react-dom';
 import { AadHttpClient, SPHttpClient, SPHttpClientResponse } from '@microsoft/sp-http';
 import styles from './AiKnowledgeWorkspace.module.scss';
 import type { IAiKnowledgeWorkspaceProps } from './IAiKnowledgeWorkspaceProps';
 import { escape } from '@microsoft/sp-lodash-subset';
+import { formatOcrIngestionMessage, getOcrIngestEndpoint, IOcrIngestionResult } from './ocrIngestion';
+import { buildListItemSelect } from './documentLibraryColumns';
+import type { IDocumentLibraryDisplayColumn } from './documentLibraryColumns';
+import { buildRenameEndpoint, RenameItemType, validateRenameName } from './renameItem';
+import { formatAnswerForDisplay } from './answerPresentation';
+import { getSelectionCommandState, toggleSelection } from './librarySelection';
+import { getFileIconKind } from './fileIcon';
+import { shouldDeferQuestionSubmitForComposition, shouldSubmitQuestionOnEnter } from './questionSubmission';
 
 interface ICitation {
   title: string;
@@ -42,9 +51,11 @@ interface ILegalDocument {
   snippet: string;
   lastModified: string;
   modifiedBy: string;
+  fieldValues: Record<string, unknown>;
 }
 
 interface ISharePointFileItem {
+  [internalName: string]: unknown;
   Id: number;
   FileLeafRef: string;
   FileRef: string;
@@ -88,7 +99,10 @@ interface IAiKnowledgeWorkspaceState {
   isCreateFolderOpen: boolean;
   newFolderName: string;
   isCreatingFolder: boolean;
-  confirmationDialog: 'delete' | 'ingest' | '';
+  isRenameOpen: boolean;
+  renameName: string;
+  isRenaming: boolean;
+  confirmationDialog: 'delete' | 'ingest-text' | 'ingest-ocr' | '';
   isPreviewOpen: boolean;
   surfaceMode: SurfaceMode;
   documents: ILegalDocument[];
@@ -98,6 +112,8 @@ interface IAiKnowledgeWorkspaceState {
   selectedParentFolderName: string;
   selectedFileUrl: string;
   selectedFolderForAction: string;
+  selectedFileUrls: string[];
+  selectedFolderPaths: string[];
   viewMode: ViewMode;
   isAiPanelOpen: boolean;
   libraryStatus: LibraryStatus;
@@ -108,6 +124,8 @@ interface IAiKnowledgeWorkspaceState {
   ragMessage: string;
   isIngesting: boolean;
   ingestionMessage: string;
+  isOcrIngesting: boolean;
+  ocrIngestionMessage: string;
 }
 
 const MAX_SELECTED_PDF_BYTES = 4 * 1024 * 1024;
@@ -115,8 +133,11 @@ const MAX_SELECTED_PDF_BYTES = 4 * 1024 * 1024;
 export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWorkspaceProps, IAiKnowledgeWorkspaceState> {
   private readonly _fileInputRef: React.RefObject<HTMLInputElement> = React.createRef<HTMLInputElement>();
   private readonly _conversationAreaRef: React.RefObject<HTMLDivElement> = React.createRef<HTMLDivElement>();
+  private readonly _workspaceRef: React.RefObject<HTMLElement> = React.createRef<HTMLElement>();
   private _answerRevealTimer: number | undefined;
   private _commandMessageTimer: number | undefined;
+  private _submitAfterComposition = false;
+  private readonly _conversationHistoryByScope: Record<string, IConversationTurn[]> = {};
 
   public constructor(props: IAiKnowledgeWorkspaceProps) {
     super(props);
@@ -137,6 +158,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       isCreateFolderOpen: false,
       newFolderName: '',
       isCreatingFolder: false,
+      isRenameOpen: false,
+      renameName: '',
+      isRenaming: false,
       confirmationDialog: '',
       isPreviewOpen: false,
       surfaceMode: 'document-library',
@@ -147,6 +171,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedParentFolderName: '',
       selectedFileUrl: '',
       selectedFolderForAction: '',
+      selectedFileUrls: [],
+      selectedFolderPaths: [],
       viewMode: 'parents',
       isAiPanelOpen: false,
       libraryStatus: 'loading',
@@ -156,7 +182,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       ragStatus: 'checking',
       ragMessage: 'Checking Azure AI Search RAG...',
       isIngesting: false,
-      ingestionMessage: 'No library ingestion has run from this workspace yet.'
+      ingestionMessage: 'No text-PDF library ingestion has run from this workspace yet.',
+      isOcrIngesting: false,
+      ocrIngestionMessage: 'No OCR-required PDF processing has run from this workspace yet.'
     };
   }
 
@@ -176,8 +204,12 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   public componentDidUpdate(prevProps: IAiKnowledgeWorkspaceProps, prevState: IAiKnowledgeWorkspaceState): void {
-    if (prevProps.documentLibraryName !== this.props.documentLibraryName || prevProps.siteUrl !== this.props.siteUrl) {
+    if (prevProps.documentLibraryName !== this.props.documentLibraryName || prevProps.siteUrl !== this.props.siteUrl || prevProps.displayColumns !== this.props.displayColumns) {
       this._loadLibraryFiles().catch(() => undefined);
+    }
+
+    if (prevState.conversationTurns !== this.state.conversationTurns && prevState.selectedFileUrl === this.state.selectedFileUrl) {
+      this._saveConversationHistory(this.state.selectedFileUrl, this.state.conversationTurns);
     }
 
     if (prevState.commandMessage !== this.state.commandMessage) {
@@ -190,14 +222,118 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     }
   }
 
+  private _getSharePointFontFamily(): string | undefined {
+    const workspace = this._workspaceRef.current;
+    return workspace ? window.getComputedStyle(workspace).fontFamily : undefined;
+  }
+
+  private _getConversationHistoryKey(fileUrl: string): string {
+    return `nextcore.ask-ai.history:${this.props.siteUrl}:${this.props.documentLibraryName}:${fileUrl || '__library__'}`;
+  }
+
+  private _saveConversationHistory(fileUrl: string, turns: IConversationTurn[]): void {
+    const key = this._getConversationHistoryKey(fileUrl);
+    this._conversationHistoryByScope[key] = turns;
+    try {
+      window.sessionStorage.setItem(key, JSON.stringify(turns));
+    } catch {
+      // Keep the in-memory history when browser storage is unavailable.
+    }
+  }
+
+  private _getConversationHistory(fileUrl: string): IConversationTurn[] {
+    const key = this._getConversationHistoryKey(fileUrl);
+    if (this._conversationHistoryByScope[key]) {
+      return this._conversationHistoryByScope[key];
+    }
+    try {
+      const saved = window.sessionStorage.getItem(key);
+      if (saved) {
+        const turns = JSON.parse(saved) as IConversationTurn[];
+        this._conversationHistoryByScope[key] = turns;
+        return turns;
+      }
+    } catch {
+      // Start a fresh history if the browser has cleared or blocked storage.
+    }
+    return [];
+  }
+
+  private _selectFile(doc: ILegalDocument, preview = false): void {
+    this._saveConversationHistory(this.state.selectedFileUrl, this.state.conversationTurns);
+    this.setState({
+      selectedFileUrl: doc.url,
+      selectedFolderPath: doc.folderPath,
+      selectedFolderForAction: '',
+      selectedFileUrls: [doc.url],
+      selectedFolderPaths: [],
+      isPreviewOpen: preview,
+      conversationTurns: this._getConversationHistory(doc.url)
+    });
+  }
+
+  private _toggleFileSelection(doc: ILegalDocument): void {
+    this.setState((currentState) => {
+      const selectedFileUrls = toggleSelection(currentState.selectedFileUrls, doc.url);
+      const commandState = getSelectionCommandState(selectedFileUrls, currentState.selectedFolderPaths);
+      return {
+        selectedFileUrls,
+        selectedFileUrl: commandState.selectedFileUrl,
+        selectedFolderForAction: commandState.selectedFolderPath,
+        isPreviewOpen: false
+      };
+    });
+  }
+
+  private _toggleFolderSelection(folderPath: string): void {
+    this.setState((currentState) => {
+      const selectedFolderPaths = toggleSelection(currentState.selectedFolderPaths, folderPath);
+      const commandState = getSelectionCommandState(currentState.selectedFileUrls, selectedFolderPaths);
+      return {
+        selectedFolderPaths,
+        selectedFileUrl: commandState.selectedFileUrl,
+        selectedFolderForAction: commandState.selectedFolderPath,
+        isPreviewOpen: false
+      };
+    });
+  }
+
+  private _selectFolderForAction(folderPath: string): void {
+    this.setState({
+      selectedFileUrl: '',
+      selectedFolderForAction: folderPath,
+      selectedFileUrls: [],
+      selectedFolderPaths: [folderPath],
+      isPreviewOpen: false
+    });
+  }
+
+  private _openRenameForFile(doc: ILegalDocument): void {
+    this.setState({
+      selectedFileUrl: doc.url,
+      selectedFolderForAction: '',
+      selectedFileUrls: [doc.url],
+      selectedFolderPaths: []
+    }, () => this._openRenameDialog());
+  }
+
+  private _openRenameForFolder(folderPath: string): void {
+    this.setState({
+      selectedFileUrl: '',
+      selectedFolderForAction: folderPath,
+      selectedFileUrls: [],
+      selectedFolderPaths: [folderPath]
+    }, () => this._openRenameDialog());
+  }
+
   public render(): React.ReactElement<IAiKnowledgeWorkspaceProps> {
     const selectedFile = this._getSelectedFile();
-    const selectedFolderForAction = this.state.selectedFolderForAction;
-    const deleteTargetName = selectedFile?.name || (selectedFolderForAction ? this._getLastFolderSegment(selectedFolderForAction) : '');
+    const selectionCommandState = getSelectionCommandState(this.state.selectedFileUrls, this.state.selectedFolderPaths);
     const originalLibraryUrl = this._getOriginalLibraryUrl();
 
     return (
       <section
+        ref={this._workspaceRef}
         className={styles.aiKnowledgeWorkspace}
         onClick={() => this.state.isNewMenuOpen && this.setState({ isNewMenuOpen: false })}
       >
@@ -207,21 +343,21 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             type="button"
             onClick={() => this._selectSurfaceMode('document-library')}
           >
-            Document Library
+            Documents
           </button>
           <button
             className={this.state.surfaceMode === 'sharepoint-list' ? styles.surfaceTabActive : styles.surfaceTab}
             type="button"
             onClick={() => this._selectSurfaceMode('sharepoint-list')}
           >
-            SharePoint List
+            Lists
           </button>
           <button
             className={this.state.surfaceMode === 'site-pages' ? styles.surfaceTabActive : styles.surfaceTab}
             type="button"
             onClick={() => this._selectSurfaceMode('site-pages')}
           >
-            Site Pages
+            Pages
           </button>
         </div>
 
@@ -254,17 +390,26 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           <button
             className={styles.commandButton}
             type="button"
-            disabled={!selectedFile}
-            title={selectedFile ? `Preview ${selectedFile.name}` : 'Select a file to preview'}
+            disabled={!selectionCommandState.canPreview}
+            title={selectionCommandState.previewTitle}
             onClick={() => this.setState({ isPreviewOpen: true })}
           >
             👁 Preview
           </button>
           <button
+            className={styles.commandButton}
+            type="button"
+            disabled={!selectionCommandState.canRename}
+            title={selectionCommandState.renameTitle}
+            onClick={() => this._openRenameDialog()}
+          >
+            ✎ Rename
+          </button>
+          <button
             className={styles.dangerCommand}
             type="button"
-            disabled={!selectedFile && !selectedFolderForAction}
-            title={deleteTargetName ? `Delete ${deleteTargetName}` : 'Select a file or folder before deleting'}
+            disabled={!selectionCommandState.canDelete}
+            title={selectionCommandState.deleteTitle}
             onClick={() => this._deleteSelectedItem()}
           >
             🗑 Delete
@@ -305,9 +450,11 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
             {this.state.surfaceMode === 'document-library' ? this._renderLibraryContent(selectedFile) : this._renderFutureSurface()} 
           </main>
+          {this.state.surfaceMode === 'document-library' && this._renderDocumentSummary(selectedFile)}
 
           {this.state.isAiPanelOpen && this._renderAiPopup(selectedFile)}
           {this.state.isCreateFolderOpen && this._renderCreateFolderDialog()}
+          {this.state.isRenameOpen && this._renderRenameDialog()}
           {this.state.confirmationDialog && this._renderConfirmationDialog()}
           {this.state.isSettingsOpen && this._renderSettingsPopup()}
           {this.state.isPreviewOpen && selectedFile && this._renderPreviewPopup(selectedFile)}
@@ -317,21 +464,81 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
 
-  private _renderAiPopup(selectedFile: ILegalDocument | undefined): React.ReactElement {
-    const isFileAnalysis = Boolean(selectedFile);
-    const scope = isFileAnalysis ? selectedFile!.name : `Entire ${this.props.documentLibraryName} library`;
-    const sampleQuestions = isFileAnalysis
-      ? ['Summarize this document', 'List key dates and deadlines', 'What actions are required?']
-      : ['Find documents about this topic', 'Summarize key next actions', 'Identify important dates and deadlines'];
-    const introduction = isFileAnalysis
-      ? `Ask questions about this file in ${this.props.documentLibraryName}. Get a summary, find key dates, or identify important details.`
-      : `Ask questions across ${this.props.documentLibraryName}. Answers use relevant document evidence and include sources.`;
-    const placeholder = isFileAnalysis
-      ? 'Ask a question about this file…'
-      : 'Describe the document, topic, person, date, or evidence you need…';
+  private _renderDocumentSummary(selectedFile: ILegalDocument | undefined): React.ReactElement {
+    const selectedDocuments = this.state.documents.filter((document) => this.state.selectedFileUrls.indexOf(document.url) >= 0);
+    const documentForSummary = selectedFile || (selectedDocuments.length === 1 ? selectedDocuments[0] : undefined);
+
+    if (!documentForSummary) {
+      return (
+        <aside className={styles.documentSummary} aria-label="Document Summary">
+          <header className={styles.documentSummaryHeader}><h2>Document Summary</h2><span>Select a document to view its context</span></header>
+          <div className={styles.documentSummaryEmpty}>Select one PDF to see its document details and generate an evidence-grounded summary.</div>
+        </aside>
+      );
+    }
 
     return (
-      <div className={styles.aiOverlay} role="dialog" aria-modal="true" aria-label="Ask AI">
+      <aside className={styles.documentSummary} aria-label="Document Summary">
+        <header className={styles.documentSummaryHeader}><h2>Document Summary</h2><span>Selected document context</span></header>
+        <div className={styles.summaryFile}><span className={styles.fileGlyph}>{this._renderFileGlyph(documentForSummary.type)}</span><div><strong>{escape(documentForSummary.name)}</strong><span>{escape(documentForSummary.type.toUpperCase())} · Indexed document</span></div></div>
+        <div className={styles.summaryMetadata}><div><span>MODIFIED</span><strong>{escape(documentForSummary.lastModified)}</strong></div><div><span>MODIFIED BY</span><strong>{escape(documentForSummary.modifiedBy || '—')}</strong></div></div>
+        <div className={styles.summaryBody}><h3>AI SUMMARY</h3><p>Generate a concise, evidence-grounded summary for this selected document. Sources stay visible in Ask AI.</p><ul><li>Selected-file scope is preserved.</li><li>OCR page citations are retained when available.</li><li>Conversation history remains browser-session only.</li></ul><div className={styles.summaryActions}><button type="button" onClick={() => this._openSummaryAsk(documentForSummary, 'Summarize this document')}>Generate summary</button><button className={styles.summaryAskButton} type="button" onClick={() => this._openSummaryAsk(documentForSummary)}>Ask AI</button></div></div>
+      </aside>
+    );
+  }
+
+  private _openSummaryAsk(document: ILegalDocument, question?: string): void {
+    this.setState({
+      selectedFileUrl: document.url,
+      selectedFileUrls: [document.url],
+      selectedFolderPaths: [],
+      selectedFolderForAction: '',
+      isAiPanelOpen: true,
+      question: question || this.state.question,
+      conversationTurns: this._getConversationHistory(document.url)
+    }, () => {
+      if (question) this._ask(question).catch(() => undefined);
+    });
+  }
+
+  private _renderAiPopup(selectedFile: ILegalDocument | undefined): React.ReactElement {
+    const selectedDocuments = this.state.documents.filter((document) => this.state.selectedFileUrls.indexOf(document.url) >= 0);
+    const isFileAnalysis = selectedDocuments.length > 0;
+    const activeFolderPath = this._getActiveFolderPathForAsk();
+    const isFolderAnalysis = !isFileAnalysis && activeFolderPath.toLowerCase() !== this._getLibraryRootServerRelativeUrl().toLowerCase();
+    const scope = selectedDocuments.length === 1
+      ? selectedDocuments[0].name
+      : selectedDocuments.length > 1
+        ? `${selectedDocuments.length} selected documents`
+        : isFolderAnalysis
+          ? `Current folder: ${this._formatFolderName(activeFolderPath)}`
+          : `Entire ${this.props.documentLibraryName} library`;
+    const sampleQuestions = isFileAnalysis
+      ? ['Summarize this document', 'List key dates and deadlines', 'What actions are required?']
+      : isFolderAnalysis
+        ? ['Summarize documents in this folder', 'What are the main topics in this folder?', 'Identify important dates and deadlines']
+        : ['Find documents about this topic', 'Summarize key next actions', 'Identify important dates and deadlines'];
+    const introduction = selectedDocuments.length === 1
+      ? `Ask questions about this file in ${this.props.documentLibraryName}. Answers use evidence from this file and include sources.`
+      : selectedDocuments.length > 1
+        ? `Ask questions across these ${selectedDocuments.length} selected documents. Answers use only their indexed evidence and include sources.`
+        : isFolderAnalysis
+          ? `Ask questions about documents in the current folder. Answers use only indexed evidence from this folder and include sources.`
+          : `Ask questions across ${this.props.documentLibraryName}. Answers use relevant document evidence and include sources.`;
+    const placeholder = selectedDocuments.length > 0
+      ? `Ask a question about ${selectedDocuments.length === 1 ? 'this file' : 'these selected documents'}…`
+      : 'Describe the document, topic, person, date, or evidence you need…';
+    const isWorkbench = /\/_layouts\/15\/workbench\.aspx$/i.test(window.location.pathname);
+    const overlayClassName = isWorkbench ? styles.aiOverlay : `${styles.aiOverlay} ${styles.askAiOverlay}`;
+    // The portal is attached to document.body, outside the SharePoint canvas
+    // where the theme variables are inherited. Copy the resolved canvas font.
+    const sharePointFontFamily = this._getSharePointFontFamily();
+
+    // A SharePoint canvas web part lives in its own stacking context. Render the
+    // production drawer at document.body so it can genuinely sit above the
+    // Office suite bar and the edit footer.
+    return ReactDOM.createPortal(
+      <div className={overlayClassName} style={sharePointFontFamily ? { fontFamily: sharePointFontFamily } : undefined} role="dialog" aria-modal="true" aria-label="Ask AI">
         <div className={styles.aiDialog}>
           <aside className={styles.aiPanel}>
             <div className={styles.aiPanelHeader}>
@@ -345,7 +552,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             <div className={styles.aiScope}>
               <span className={styles.aiScopeDot} />
               <div>
-                <strong>{isFileAnalysis ? 'Selected file' : 'Library search'}</strong>
+                <strong>{isFileAnalysis ? 'Selected file' : isFolderAnalysis ? 'Current folder' : 'Library search'}</strong>
                 <span>{escape(scope)}</span>
               </div>
             </div>
@@ -355,10 +562,10 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             <div ref={this._conversationAreaRef} className={styles.conversationArea} aria-live="polite">
               {this.state.conversationTurns.map((turn) => (
                 <div key={turn.id} className={styles.conversationTurn}>
-                  <div className={styles.questionBubble}>{escape(turn.question)}</div>
+                  <div className={styles.questionBubble}>{formatAnswerForDisplay(turn.question)}</div>
                   {(turn.displayedAnswer || turn.answer) && (
                     <div className={styles.answerBox}>
-                      <p>{turn.displayedAnswer || turn.answer}</p>
+                      <p>{formatAnswerForDisplay(turn.displayedAnswer || turn.answer || '')}</p>
                       {turn.requestId && <span className={styles.requestId}>Request ID: {escape(turn.requestId)}</span>}
                     </div>
                   )}
@@ -400,10 +607,31 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                 value={this.state.question}
                 onChange={(event) => this.setState({ question: event.currentTarget.value })}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey && this.state.question.trim() && !this.state.isLoading) {
+                  const questionEvent = {
+                    key: event.key,
+                    shiftKey: event.shiftKey,
+                    isComposing: event.nativeEvent.isComposing,
+                    keyCode: event.keyCode,
+                    question: this.state.question,
+                    isLoading: this.state.isLoading
+                  };
+                  if (shouldDeferQuestionSubmitForComposition(questionEvent)) {
+                    // The first Enter completes an IME syllable. Submit on composition end,
+                    // when React has the complete controlled-textarea value.
+                    this._submitAfterComposition = true;
+                    return;
+                  }
+                  if (shouldSubmitQuestionOnEnter(questionEvent)) {
                     event.preventDefault();
                     this._ask(this.state.question).catch(() => undefined);
                   }
+                }}
+                onCompositionEnd={(event) => {
+                  if (!this._submitAfterComposition) return;
+                  this._submitAfterComposition = false;
+                  const completedQuestion = event.currentTarget.value;
+                  if (!completedQuestion.trim() || this.state.isLoading) return;
+                  this.setState({ question: completedQuestion }, () => this._ask(completedQuestion).catch(() => undefined));
                 }}
                 placeholder={placeholder}
                 aria-label="Message AI"
@@ -415,7 +643,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             </div>
           </aside>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
@@ -460,24 +689,75 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     );
   }
 
-  private _renderConfirmationDialog(): React.ReactElement {
-    const isDelete = this.state.confirmationDialog === 'delete';
+  private _renderRenameDialog(): React.ReactElement {
     const selectedFile = this._getSelectedFile();
     const selectedFolderPath = this.state.selectedFolderForAction;
     const isFolder = !selectedFile && !!selectedFolderPath;
+    const currentName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
+    const validation = validateRenameName(this.state.renameName, currentName);
+
+    return (
+      <div className={styles.folderDialogOverlay} role="dialog" aria-modal="true" aria-label={`Rename ${isFolder ? 'folder' : 'file'}`}>
+        <form className={styles.folderDialog} onSubmit={(event) => { event.preventDefault(); this._renameSelectedItem().catch(() => undefined); }}>
+          <div className={styles.folderDialogHeader}>
+            <div>
+              <span>RENAME {isFolder ? 'FOLDER' : 'FILE'}</span>
+              <h2>Rename {escape(currentName)}</h2>
+            </div>
+            <button type="button" className={styles.closeButton} aria-label="Close rename" onClick={() => this._closeRenameDialog()}>×</button>
+          </div>
+          <label className={styles.folderInputLabel} htmlFor="rename-name">New name</label>
+          <input
+            id="rename-name"
+            className={styles.folderNameInput}
+            type="text"
+            autoFocus
+            maxLength={128}
+            value={this.state.renameName}
+            onChange={(event) => this.setState({ renameName: event.currentTarget.value })}
+            aria-describedby="rename-name-hint"
+          />
+          <p id="rename-name-hint" className={styles.renameHint}>Names cannot contain \ / : * ? &quot; &lt; &gt; | # % {'{'} {'}'} ~ &amp;.</p>
+          {!validation.valid && this.state.renameName.trim() && <p className={styles.renameError} role="alert">{validation.error}</p>}
+          <div className={styles.folderDialogActions}>
+            <button type="button" className={styles.folderCancelButton} onClick={() => this._closeRenameDialog()}>Cancel</button>
+            <button type="submit" className={styles.folderCreateButton} disabled={this.state.isRenaming || !validation.valid}>
+              {this.state.isRenaming ? 'Renaming…' : 'Rename'}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  private _renderConfirmationDialog(): React.ReactElement {
+    const isDelete = this.state.confirmationDialog === 'delete';
+    const isOcrIngest = this.state.confirmationDialog === 'ingest-ocr';
+    const selectionCommandState = getSelectionCommandState(this.state.selectedFileUrls, this.state.selectedFolderPaths);
+    const selectedFile = this._getSelectedFile();
+    const selectedFolderPath = selectionCommandState.selectedFolderPath;
+    const isFolder = !selectedFile && !!selectedFolderPath;
     const targetName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
-    const title = isDelete ? `Delete ${isFolder ? 'folder' : 'file'}?` : 'Index library text PDFs?';
+    const title = isDelete
+      ? selectionCommandState.total > 1 ? `Delete ${selectionCommandState.total} items?` : `Delete ${isFolder ? 'folder' : 'file'}?`
+      : isOcrIngest
+        ? 'Process OCR-required PDFs?'
+        : 'Index supported documents?';
     const message = isDelete
-      ? `“${targetName}” will be moved to the SharePoint recycle bin.`
-      : `Index supported text-layer PDFs from ${this.props.documentLibraryName}. Scanned/image PDFs will be reported as OCR required.`;
-    const confirmLabel = isDelete ? 'Move to recycle bin' : 'Start indexing';
+      ? selectionCommandState.total > 1
+        ? `${selectionCommandState.total} selected files and folders will be moved to the SharePoint recycle bin.`
+        : `“${targetName}” will be moved to the SharePoint recycle bin.`
+      : isOcrIngest
+        ? `Process only OCR-required PDFs in ${this.props.documentLibraryName}. This is a separate, explicit action and does not run automatically.`
+        : `Index supported PDF, Word, PowerPoint, and Excel files from ${this.props.documentLibraryName}. Scanned/image PDFs will be reported as OCR required.`;
+    const confirmLabel = isDelete ? 'Move to recycle bin' : isOcrIngest ? 'Process OCR PDFs' : 'Start indexing';
 
     return (
       <div className={styles.folderDialogOverlay} role="dialog" aria-modal="true" aria-label={title}>
         <div className={styles.confirmationDialog}>
           <div className={styles.folderDialogHeader}>
             <div>
-              <span>{isDelete ? 'CONFIRM DELETE' : 'CONFIRM INDEXING'}</span>
+              <span>{isDelete ? 'CONFIRM DELETE' : isOcrIngest ? 'CONFIRM OCR PROCESSING' : 'CONFIRM INDEXING'}</span>
               <h2>{title}</h2>
             </div>
             <button type="button" className={styles.closeButton} aria-label="Close confirmation" onClick={() => this.setState({ confirmationDialog: '' })}>×</button>
@@ -492,6 +772,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                 this.setState({ confirmationDialog: '' });
                 if (isDelete) {
                   this._confirmDeleteSelectedItem().catch(() => undefined);
+                } else if (isOcrIngest) {
+                  this._confirmOcrLibraryIngest().catch(() => undefined);
                 } else {
                   this._confirmLibraryIngest().catch(() => undefined);
                 }
@@ -546,6 +828,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             <span>{escape(this.state.ragMessage)}</span>
             <strong>Library ingestion</strong>
             <span>{escape(this.state.ingestionMessage)}</span>
+            <strong>OCR PDF processing</strong>
+            <span>{escape(this.state.ocrIngestionMessage)}</span>
             <strong>Current upload target</strong>
             <span>{escape(this._getCurrentFolderServerRelativeUrl())}</span>
             <strong>Loaded metadata</strong>
@@ -554,11 +838,20 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           <button
             className={styles.askButton}
             type="button"
-            disabled={this.state.isIngesting || this.state.ragStatus === 'error'}
+            disabled={this.state.isIngesting || this.state.isOcrIngesting || this.state.ragStatus === 'error'}
             onClick={() => this._ingestLibrary()}
           >
-            {this.state.isIngesting ? 'Indexing text PDFs...' : 'Index text PDFs now'}
+            {this.state.isIngesting ? 'Indexing supported documents...' : 'Index supported documents now'}
           </button>
+          <button
+            className={styles.askButton}
+            type="button"
+            disabled={this.state.isIngesting || this.state.isOcrIngesting || this.state.ragStatus === 'error'}
+            onClick={() => this._ingestOcrLibrary()}
+          >
+            {this.state.isOcrIngesting ? 'Processing OCR-required PDFs...' : 'Process OCR-required PDFs'}
+          </button>
+          <p className={styles.ocrLimitHint}>OCR applies only to PDF files up to 4 MB and 15 pages with printed text; it is not for signatures.</p>
           <button className={styles.askButton} type="button" onClick={() => { this._checkBackendHealth().catch(() => undefined); this._checkRagHealth().catch(() => undefined); }}>
             Recheck backend and RAG
           </button>
@@ -614,11 +907,95 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
 
-  private _deleteSelectedItem(): void {
+  private _openRenameDialog(): void {
     const selectedFile = this._getSelectedFile();
     const selectedFolderPath = this.state.selectedFolderForAction;
+    const currentName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
 
-    if (!selectedFile && !selectedFolderPath) {
+    if (!currentName) {
+      this.setState({ commandMessage: 'Select a file or folder before renaming.' });
+      return;
+    }
+
+    this.setState({ isRenameOpen: true, renameName: currentName });
+  }
+
+  private _closeRenameDialog(): void {
+    if (!this.state.isRenaming) {
+      this.setState({ isRenameOpen: false, renameName: '' });
+    }
+  }
+
+  private async _renameSelectedItem(): Promise<void> {
+    const selectedFile = this._getSelectedFile();
+    const selectedFolderPath = this.state.selectedFolderForAction;
+    const itemType: RenameItemType | undefined = selectedFile ? 'file' : selectedFolderPath ? 'folder' : undefined;
+    const sourceServerRelativeUrl = selectedFile?.serverRelativeUrl || selectedFolderPath;
+    const currentName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
+    const validation = validateRenameName(this.state.renameName, currentName);
+
+    if (!itemType || !sourceServerRelativeUrl) {
+      this.setState({ isRenameOpen: false, commandMessage: 'Select a file or folder before renaming.' });
+      return;
+    }
+
+    if (!validation.valid) {
+      this.setState({ commandMessage: validation.error });
+      return;
+    }
+
+    const navigationState: NavigationState = {
+      selectedFolderPath: this.state.selectedFolderPath,
+      selectedParentFolderName: this.state.selectedParentFolderName,
+      selectedFileUrl: selectedFile ? this._getAbsoluteSharePointUrl(this._getRenamedPath(sourceServerRelativeUrl, validation.value)) : '',
+      viewMode: this.state.viewMode
+    };
+    this.setState({ isRenaming: true, commandMessage: `Renaming ${currentName}...` });
+
+    try {
+      const endpoint = buildRenameEndpoint(this.props.siteUrl, itemType, sourceServerRelativeUrl, validation.value);
+      const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, {
+        headers: { Accept: 'application/json;odata=nometadata' }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Rename failed for ${currentName} (${response.status} ${response.statusText}).`);
+      }
+
+      await this._loadLibraryFiles(navigationState);
+      this.setState({
+        isRenaming: false,
+        isRenameOpen: false,
+        renameName: '',
+        selectedFolderForAction: '',
+        isPreviewOpen: false,
+        commandMessage: `Renamed ${itemType}: ${validation.value}`
+      });
+    } catch (error) {
+      this.setState({
+        isRenaming: false,
+        commandMessage: (error as Error).message || 'Rename failed.'
+      });
+    }
+  }
+
+  private _getRenamedPath(sourceServerRelativeUrl: string, newName: string): string {
+    const sourcePath = sourceServerRelativeUrl.replace(/\/+$/, '');
+    return `${sourcePath.substring(0, sourcePath.lastIndexOf('/'))}/${newName}`;
+  }
+
+  private _getAbsoluteSharePointUrl(serverRelativeUrl: string): string {
+    try {
+      return `${new URL(this.props.siteUrl).origin}${serverRelativeUrl}`;
+    } catch {
+      return `${this.props.siteUrl.replace(/\/$/, '')}${serverRelativeUrl}`;
+    }
+  }
+
+  private _deleteSelectedItem(): void {
+    const selectionCommandState = getSelectionCommandState(this.state.selectedFileUrls, this.state.selectedFolderPaths);
+
+    if (!selectionCommandState.canDelete) {
       this.setState({ commandMessage: 'Select a file or folder before deleting.' });
       return;
     }
@@ -627,12 +1004,15 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private async _confirmDeleteSelectedItem(): Promise<void> {
-    const selectedFile = this._getSelectedFile();
-    const selectedFolderPath = this.state.selectedFolderForAction;
-    const isFolder = !selectedFile && !!selectedFolderPath;
-    const targetName = selectedFile?.name || (selectedFolderPath ? this._getLastFolderSegment(selectedFolderPath) : '');
+    const selectedFiles = this.state.selectedFileUrls
+      .map((fileUrl) => this.state.documents.find((document) => document.url === fileUrl))
+      .filter((document): document is ILegalDocument => !!document);
+    const deleteTargets = [
+      ...selectedFiles.map((document) => ({ name: document.name, url: document.serverRelativeUrl, isFolder: false })),
+      ...this.state.selectedFolderPaths.map((folderPath) => ({ name: this._getLastFolderSegment(folderPath), url: folderPath, isFolder: true }))
+    ];
 
-    if (!targetName) {
+    if (deleteTargets.length === 0) {
       this.setState({ commandMessage: 'Select a file or folder before deleting.' });
       return;
     }
@@ -643,29 +1023,32 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedFileUrl: '',
       viewMode: this.state.viewMode
     };
-    this.setState({ commandMessage: `Deleting ${targetName}...` });
+    this.setState({ commandMessage: `Deleting ${deleteTargets.length} selected item(s)...` });
 
     try {
-      const targetUrl = isFolder ? selectedFolderPath : selectedFile!.serverRelativeUrl;
-      const api = isFolder ? 'GetFolderByServerRelativeUrl' : 'GetFileByServerRelativeUrl';
-      const endpoint = `${this.props.siteUrl}/_api/web/${api}('${this._escapeODataString(targetUrl)}')/recycle()`;
-      const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, {
-        headers: { Accept: 'application/json;odata=nometadata' }
-      });
+      for (const target of deleteTargets) {
+        const api = target.isFolder ? 'GetFolderByServerRelativeUrl' : 'GetFileByServerRelativeUrl';
+        const endpoint = `${this.props.siteUrl}/_api/web/${api}('${this._escapeODataString(target.url)}')/recycle()`;
+        const response = await this.props.spHttpClient.post(endpoint, SPHttpClient.configurations.v1, {
+          headers: { Accept: 'application/json;odata=nometadata' }
+        });
 
-      if (!response.ok) {
-        throw new Error(`Delete failed for ${targetName} (${response.status} ${response.statusText}).`);
+        if (!response.ok) {
+          throw new Error(`Delete failed for ${target.name} (${response.status} ${response.statusText}).`);
+        }
       }
 
       await this._loadLibraryFiles(navigationState);
       this.setState({
         isPreviewOpen: false,
         selectedFolderForAction: '',
+        selectedFileUrls: [],
+        selectedFolderPaths: [],
         answer: '',
         citations: [],
         suggestedActions: [],
         requestId: '',
-        commandMessage: `Moved to recycle bin: ${targetName}`
+        commandMessage: `Moved ${deleteTargets.length} item(s) to the recycle bin.`
       });
     } catch (error) {
       this.setState({ commandMessage: (error as Error).message || 'Delete failed.' });
@@ -769,34 +1152,37 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   private _renderParentFolderRows(): React.ReactElement {
     const rootDocuments = this._getRootDocuments();
     const selectedFile = this._getSelectedFile();
+    const displayColumns = this.props.displayColumns;
+    const gridTemplateColumns = `34px minmax(260px, 1fr)${displayColumns.map(() => ' minmax(116px, 150px)').join('')}`;
 
     return (
       <div className={styles.tableWrap}>
-        <div className={styles.tableHeader}>
+        <div className={styles.tableHeader} style={{ gridTemplateColumns }}>
           <span />
           <span>Name / Category</span>
-          <span>Files</span>
-          <span>Latest modified</span>
+          {displayColumns.map((column) => <span key={column.internalName}>{escape(column.title)}</span>)}
         </div>
         {this._getParentFolderNames().map((parentName) => {
           const files = this._getDocumentsForParentFolder(parentName);
           const latest = files[0]?.lastModified || '';
           const folderPath = this._getServerRelativePathForParent(parentName);
-          const isFolderSelected = this.state.selectedFolderForAction === folderPath;
+          const isFolderSelected = this.state.selectedFolderPaths.indexOf(folderPath) >= 0;
 
           return (
-            <div className={isFolderSelected ? styles.tableRowActive : styles.tableRow} key={parentName}>
+            <div className={isFolderSelected ? styles.tableRowActive : styles.tableRow} style={{ gridTemplateColumns }} key={parentName}>
               <button
                 className={isFolderSelected ? styles.selectCircleActive : styles.selectCircleButton}
                 type="button"
                 aria-label={`Select folder ${parentName}`}
-                onClick={() => this.setState({ selectedFolderForAction: isFolderSelected ? '' : folderPath, selectedFileUrl: '' })}
+                onClick={() => this._toggleFolderSelection(folderPath)}
               />
-              <button className={styles.nameCellButton} type="button" onClick={() => this._selectParentFolder(parentName)}>
-                <span className={styles.folderGlyph}>📁</span>{escape(parentName)}
-              </button>
-              <span>{files.length}</span>
-              <span>{escape(latest)}</span>
+              <div className={styles.nameCellActions}>
+                <button className={styles.nameCellButton} type="button" onClick={() => this._selectParentFolder(parentName)}>
+                  <span className={styles.folderGlyph}>📁</span>{escape(parentName)}
+                </button>
+                <button className={styles.rowMoreButton} type="button" aria-label={`Rename folder ${parentName}`} title="Rename folder" onClick={() => this._openRenameForFolder(folderPath)}>⋯</button>
+              </div>
+              {displayColumns.map((column) => <span key={column.internalName}>{escape(this._formatFolderColumnValue(column.internalName, files.length, latest))}</span>)}
             </div>
           );
         })}
@@ -823,7 +1209,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         {childFolders.map((folderPath) => {
           const files = this._getDocumentsForFolderTree(folderPath);
           const latest = files[0]?.lastModified || '';
-          const isFolderSelected = this.state.selectedFolderForAction === folderPath;
+          const isFolderSelected = this.state.selectedFolderPaths.indexOf(folderPath) >= 0;
 
           return (
             <div className={isFolderSelected ? styles.tableRowActive : styles.tableRow} key={folderPath}>
@@ -831,11 +1217,14 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
                 className={isFolderSelected ? styles.selectCircleActive : styles.selectCircleButton}
                 type="button"
                 aria-label={`Select folder ${this._getLastFolderSegment(folderPath)}`}
-                onClick={() => this.setState({ selectedFolderForAction: isFolderSelected ? '' : folderPath, selectedFileUrl: '' })}
+                onClick={() => this._toggleFolderSelection(folderPath)}
               />
-              <button className={styles.nameCellButton} type="button" onClick={() => this._selectFolder(folderPath)}>
-                <span className={styles.folderGlyph}>📁</span>{escape(this._getLastFolderSegment(folderPath))}
-              </button>
+              <div className={styles.nameCellActions}>
+                <button className={styles.nameCellButton} type="button" onClick={() => this._selectFolder(folderPath)}>
+                  <span className={styles.folderGlyph}>📁</span>{escape(this._getLastFolderSegment(folderPath))}
+                </button>
+                <button className={styles.rowMoreButton} type="button" aria-label={`Rename folder ${this._getLastFolderSegment(folderPath)}`} title="Rename folder" onClick={() => this._openRenameForFolder(folderPath)}>⋯</button>
+              </div>
               <span>{files.length}</span>
               <span>{escape(latest)}</span>
             </div>
@@ -882,7 +1271,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private _renderFileRow(doc: ILegalDocument, selectedFile: ILegalDocument | undefined, showModifiedBy: boolean): React.ReactElement {
-    const isSelected = selectedFile?.url === doc.url;
+    const isSelected = this.state.selectedFileUrls.indexOf(doc.url) >= 0;
 
     return (
       <div key={doc.url} className={isSelected ? styles.tableRowActive : styles.tableRow}>
@@ -890,17 +1279,20 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
           className={isSelected ? styles.selectCircleActive : styles.selectCircleButton}
           type="button"
           aria-label={`Select ${doc.name}`}
-          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath, selectedFolderForAction: '', conversationTurns: [] })}
+          onClick={() => this._toggleFileSelection(doc)}
         />
-        <button
-          className={styles.nameCellButton}
-          type="button"
-          title={`Preview ${doc.name}`}
-          onClick={() => this.setState({ selectedFileUrl: doc.url, selectedFolderPath: doc.folderPath, selectedFolderForAction: '', isPreviewOpen: true, conversationTurns: [] })}
-        >
-          <span className={styles.fileGlyph}>{this._getFileGlyph(doc.type)}</span>
-          <span>{escape(doc.name)}</span>
-        </button>
+        <div className={styles.nameCellActions}>
+          <button
+            className={styles.nameCellButton}
+            type="button"
+            title={`Preview ${doc.name}`}
+            onClick={() => this._selectFile(doc, true)}
+          >
+            <span className={styles.fileGlyph}>{this._renderFileGlyph(doc.type)}</span>
+            <span>{escape(doc.name)}</span>
+          </button>
+          <button className={styles.rowMoreButton} type="button" aria-label={`Rename ${doc.name}`} title="Rename file" onClick={() => this._openRenameForFile(doc)}>⋯</button>
+        </div>
         <span>{escape(showModifiedBy ? doc.lastModified : doc.type)}</span>
         <span>{escape(showModifiedBy ? doc.modifiedBy : doc.lastModified)}</span>
       </div>
@@ -909,20 +1301,50 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
 
   private _renderFileRows(selectedFile: ILegalDocument | undefined): React.ReactElement {
     const visibleDocuments = this._getVisibleDocuments();
+    const displayColumns: IDocumentLibraryDisplayColumn[] = this.props.displayColumns;
+    const gridTemplateColumns = `34px minmax(260px, 1fr)${displayColumns.map(() => ' minmax(116px, 150px)').join('')}`;
 
     return (
       <div className={styles.tableWrap}>
         {this._renderFileBreadcrumb(visibleDocuments.length)}
-        <div className={styles.tableHeader}>
+        <div className={styles.tableHeader} style={{ gridTemplateColumns }}>
           <span />
-          <span>Name / Classification</span>
-          <span>Recently modified</span>
-          <span>Modified by</span>
+          <span>Name</span>
+          {displayColumns.map((column) => <span key={column.internalName}>{escape(column.title)}</span>)}
         </div>
         {visibleDocuments.length === 0 && <div className={styles.noticeBox}>This folder is now empty. You are still in the same folder location.</div>}
-        {visibleDocuments.map((doc) => this._renderFileRow(doc, selectedFile, true))}
+        {visibleDocuments.map((doc) => {
+          const isSelected = this.state.selectedFileUrls.indexOf(doc.url) >= 0;
+          return <div key={doc.url} className={isSelected ? styles.tableRowActive : styles.tableRow} style={{ gridTemplateColumns }}>
+            <button className={isSelected ? styles.selectCircleActive : styles.selectCircleButton} type="button" aria-label={`Select ${doc.name}`} onClick={() => this._toggleFileSelection(doc)} />
+            <div className={styles.nameCellActions}>
+              <button className={styles.nameCellButton} type="button" title={`Preview ${doc.name}`} onClick={() => this._selectFile(doc, true)}><span className={styles.fileGlyph}>{this._renderFileGlyph(doc.type)}</span><span>{escape(doc.name)}</span></button>
+              <button className={styles.rowMoreButton} type="button" aria-label={`Rename ${doc.name}`} title="Rename file" onClick={() => this._openRenameForFile(doc)}>⋯</button>
+            </div>
+            {displayColumns.map((column) => <span key={column.internalName}>{escape(this._formatConfiguredColumnValue(doc, column.internalName))}</span>)}
+          </div>;
+        })}
       </div>
     );
+  }
+
+  private _formatFolderColumnValue(internalName: string, fileCount: number, latestModified: string): string {
+    if (internalName === 'File_x0020_Type') return 'Folder';
+    if (internalName === 'Modified') return latestModified || '—';
+    if (internalName === 'Editor' || internalName === 'Created') return '—';
+    return internalName === 'ItemChildCount' ? String(fileCount) : '—';
+  }
+
+  private _formatConfiguredColumnValue(doc: ILegalDocument, internalName: string): string {
+    const value = doc.fieldValues[internalName];
+    if (value === undefined || value === null || value === '') return '—';
+    if (internalName === 'Modified' || internalName === 'Created') return this._formatDate(String(value));
+    if (internalName === 'Editor') return doc.modifiedBy;
+    if (typeof value === 'object') {
+      const person = value as { Title?: string };
+      return person.Title || '—';
+    }
+    return String(value);
   }
 
   private async _loadLibraryFiles(navigationState?: Partial<NavigationState>): Promise<void> {
@@ -958,7 +1380,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         throw new Error(`SharePoint did not return a root folder for '${libraryName}'.`);
       }
 
-      const endpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')/items?$select=Id,FileLeafRef,FileRef,FileDirRef,File_x0020_Type,Modified,FSObjType,Editor/Title&$expand=Editor&$orderby=FileDirRef asc,Modified desc&$top=200`;
+      const selectFields = buildListItemSelect(this.props.displayColumns.map((column) => column.internalName));
+      const endpoint = `${this.props.siteUrl}/_api/web/lists/getByTitle('${escapedLibraryName}')/items?$select=${selectFields.join(',')}&$expand=Editor&$orderby=FileDirRef asc,Modified desc&$top=200`;
       const response: SPHttpClientResponse = await this.props.spHttpClient.get(endpoint, SPHttpClient.configurations.v1);
 
       if (!response.ok) {
@@ -982,6 +1405,9 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
         selectedFolderPath: navigationState?.selectedFolderPath || '',
         selectedParentFolderName: navigationState?.selectedParentFolderName || '',
         selectedFileUrl: navigationState?.selectedFileUrl || '',
+        selectedFileUrls: navigationState?.selectedFileUrl ? [navigationState.selectedFileUrl] : [],
+        selectedFolderForAction: '',
+        selectedFolderPaths: [],
         viewMode: navigationState?.viewMode || 'parents',
         libraryStatus: documents.length > 0 ? 'loaded' : 'empty',
         libraryMessage: documents.length > 0 ? `Loaded ${documents.length} file(s) across ${folderPaths.length} folder(s).` : `${libraryName} exists, but no files were found.`
@@ -1017,7 +1443,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       displayFolderPath,
       snippet: `SharePoint file from ${displayFolderPath}. Last modified ${this._formatDate(item.Modified)}.`,
       lastModified: this._formatDate(item.Modified),
-      modifiedBy: item.Editor?.Title || this.props.userDisplayName || 'Unknown'
+      modifiedBy: item.Editor?.Title || this.props.userDisplayName || 'Unknown',
+      fieldValues: item
     };
   }
 
@@ -1028,6 +1455,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedFolderPath: '',
       selectedFileUrl: '',
       selectedFolderForAction: '',
+      selectedFileUrls: [],
+      selectedFolderPaths: [],
       viewMode: 'children',
       answer: '',
       citations: [],
@@ -1044,6 +1473,8 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       selectedFolderPath: folderPath,
       selectedFileUrl: firstFileInFolder?.url || '',
       selectedFolderForAction: '',
+      selectedFileUrls: firstFileInFolder ? [firstFileInFolder.url] : [],
+      selectedFolderPaths: [],
       viewMode: 'files',
       answer: '',
       citations: [],
@@ -1282,6 +1713,39 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     return new Date(value).toLocaleString();
   }
 
+  private _renderFileGlyph(fileType: string): React.ReactNode {
+    const iconKind = getFileIconKind(fileType);
+    if (iconKind === 'pdf') {
+      return (
+        <svg className={styles.pdfFileGlyph} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 2.5h9l5 5v14H5z" fill="#fff" stroke="#d13438" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M14 2.5v5h5" fill="#f8d7da" stroke="#d13438" strokeWidth="1.5" strokeLinejoin="round" />
+          <rect x="5" y="13" width="14" height="6" rx="1" fill="#d13438" />
+          <text x="12" y="17.4" textAnchor="middle" fill="#fff" fontSize="4.5" fontWeight="700" fontFamily="Arial, sans-serif">PDF</text>
+        </svg>
+      );
+    }
+
+    if (iconKind === 'word' || iconKind === 'excel' || iconKind === 'powerpoint') {
+      const color = iconKind === 'word' ? '#185abd' : iconKind === 'excel' ? '#107c41' : '#c43e1c';
+      const accent = iconKind === 'word' ? '#2b88d8' : iconKind === 'excel' ? '#21a366' : '#d24726';
+      const letter = iconKind === 'word' ? 'W' : iconKind === 'excel' ? 'X' : 'P';
+      const grid = iconKind === 'excel';
+      return (
+        <svg className={styles.officeFileGlyph} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M7 2.5h8l4 4v15H7z" fill="#f8fbff" stroke={accent} strokeWidth="1.25" strokeLinejoin="round" />
+          <path d="M15 2.5v4h4" fill="#dcecff" stroke={accent} strokeWidth="1.25" strokeLinejoin="round" />
+          {grid && <><path d="M11.5 9h5M11.5 12h5M11.5 15h5M14 9v7" stroke="#21a366" strokeWidth="0.8" /></>}
+          {!grid && <path d="M11 11h5.5M11 14h5.5M11 17h4" stroke={accent} strokeWidth="1.1" strokeLinecap="round" />}
+          <rect x="3" y="7" width="10" height="10" rx="0.9" fill={color} />
+          <text x="8" y="13.8" textAnchor="middle" fill="#fff" fontSize="6" fontWeight="700" fontFamily="Segoe UI, Arial, sans-serif">{letter}</text>
+        </svg>
+      );
+    }
+
+    return this._getFileGlyph(fileType);
+  }
+
   private _getFileGlyph(fileType: string): string {
     const type = fileType.toLowerCase();
 
@@ -1348,6 +1812,10 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       .replace('/api/ask', '/api/rag/ingest');
   }
 
+  private _getRagOcrIngestEndpoint(): string {
+    return getOcrIngestEndpoint(this.props.functionEndpoint);
+  }
+
   private _getRagAnswerEndpoint(): string {
     return this.props.functionEndpoint
       .replace('/api/chat', '/api/rag/answer')
@@ -1355,14 +1823,29 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
   }
 
   private _ingestLibrary(): void {
-    this.setState({ confirmationDialog: 'ingest' });
+    this.setState({ confirmationDialog: 'ingest-text' });
+  }
+
+  private _ingestOcrLibrary(): void {
+    this.setState({ confirmationDialog: 'ingest-ocr' });
+  }
+
+  private _getDynamicLibraryScopeRequest(): { siteUrl: string; libraryName: string } {
+    return {
+      siteUrl: this.props.siteUrl,
+      libraryName: this.props.documentLibraryName
+    };
   }
 
   private async _confirmLibraryIngest(): Promise<void> {
-    this.setState({ isIngesting: true, ingestionMessage: `Indexing text PDFs from ${this.props.documentLibraryName}...` });
+    this.setState({ isIngesting: true, ingestionMessage: `Indexing supported documents from ${this.props.documentLibraryName}...` });
     try {
       const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
-      const response = await apiClient.fetch(this._getRagIngestEndpoint(), AadHttpClient.configurations.v1, { method: 'POST' });
+      const response = await apiClient.fetch(this._getRagIngestEndpoint(), AadHttpClient.configurations.v1, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this._getDynamicLibraryScopeRequest())
+      });
       const payload = await response.json() as {
         error?: string;
         detail?: string;
@@ -1391,6 +1874,39 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
       this.setState({
         isIngesting: false,
         ingestionMessage: (error as Error).message || 'Library ingestion failed.'
+      });
+    }
+  }
+
+  private async _confirmOcrLibraryIngest(): Promise<void> {
+    this.setState({ isOcrIngesting: true, ocrIngestionMessage: `Processing OCR-required PDFs from ${this.props.documentLibraryName}...` });
+    try {
+      const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
+      const response = await apiClient.fetch(this._getRagOcrIngestEndpoint(), AadHttpClient.configurations.v1, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this._getDynamicLibraryScopeRequest())
+      });
+      const payload = await response.json() as {
+        error?: string;
+        detail?: string;
+        ingestion?: IOcrIngestionResult;
+      };
+      if (!response.ok || !payload.ingestion) {
+        throw new Error(payload.detail || payload.error || `OCR PDF processing returned ${response.status}.`);
+      }
+
+      const ingestion = payload.ingestion;
+      this.setState({
+        isOcrIngesting: false,
+        ragStatus: ingestion.indexedChunks > 0 ? 'ready' : this.state.ragStatus,
+        ocrIngestionMessage: formatOcrIngestionMessage(ingestion)
+      });
+      await this._checkRagHealth();
+    } catch (error) {
+      this.setState({
+        isOcrIngesting: false,
+        ocrIngestionMessage: (error as Error).message || 'OCR PDF processing failed.'
       });
     }
   }
@@ -1546,10 +2062,12 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     }
 
     const selectedFile = this._getSelectedFile();
-    const useLibraryRag = !selectedFile && this.state.surfaceMode === 'document-library';
-    const contextFiles = selectedFile ? [selectedFile] : [];
+    const useLibraryRag = this.state.surfaceMode === 'document-library';
+    const contextFiles = this.state.documents.filter((document) => this.state.selectedFileUrls.indexOf(document.url) >= 0);
     const contextSnippets = contextFiles.map(doc => doc.snippet);
     const activeFolderPath = selectedFile?.folderPath || this._getActiveFolderPathForAsk();
+    const isCurrentFolderScope = contextFiles.length === 0
+      && activeFolderPath.toLowerCase() !== this._getLibraryRootServerRelativeUrl().toLowerCase();
 
     this.setState((currentState) => ({
       isLoading: true,
@@ -1563,7 +2081,7 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
     }));
 
     try {
-      const selectedDocument = selectedFile ? await this._getSelectedPdfPayload(selectedFile) : undefined;
+      const selectedDocument = selectedFile && !useLibraryRag ? await this._getSelectedPdfPayload(selectedFile) : undefined;
       const apiClient = await this.props.aadHttpClientFactory.getClient(this.props.functionApiResource);
       const response = await apiClient.fetch(
         useLibraryRag ? this._getRagAnswerEndpoint() : this.props.functionEndpoint,
@@ -1588,10 +2106,18 @@ export default class AiKnowledgeWorkspace extends React.Component<IAiKnowledgeWo
             userEmail: this.props.userDisplayName
           },
           selectedFiles: contextFiles,
+          selectedDocumentUrl: contextFiles.length === 1 ? contextFiles[0].url : undefined,
+          selectedDocumentNames: contextFiles.map((document) => document.name),
           selectedItems: [],
           documentSnippets: contextSnippets,
           selectedDocument,
-          knowledgeScope: useLibraryRag ? 'library-wide-rag' : 'legal-document-library'
+          knowledgeScope: useLibraryRag
+            ? contextFiles.length > 0
+              ? 'selected-file-rag'
+              : isCurrentFolderScope
+                ? 'current-folder-rag'
+                : 'library-wide-rag'
+            : 'legal-document-library'
         })
       });
 

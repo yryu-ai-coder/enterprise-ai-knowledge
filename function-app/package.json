@@ -17,6 +17,9 @@
     "@azure/functions": "latest",
     "@azure/identity": "^4.13.2",
     "@azure/search-documents": "^13.0.0",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
     "pdfjs-dist": "^4.10.38"
   },
   "devDependencies": {

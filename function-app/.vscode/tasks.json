@@ -39,6 +39,12 @@
 			"command": "npm prune --production",
 			"dependsOn": "npm build (functions)",
 			"problemMatcher": []
+		},
+		{
+			"type": "shell",
+			"label": "npm build direct (functions)",
+			"command": "npm run build",
+			"problemMatcher": []
 		}
 	]
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { extractPdfText } from '../src/services/pdfTextExtraction';
+import { doesPdfTextRequireOcr, extractPdfText } from '../src/services/pdfTextExtraction';
 
 test('extractPdfText returns text from a text-layer PDF', async () => {
   const fixturePath = path.resolve(process.cwd(), 'test/fixtures/text-layer-sample.pdf');
@@ -22,4 +22,9 @@ test('extractPdfText flags a PDF with no extractable text as requiring OCR', asy
 
   assert.equal(result.text, '');
   assert.equal(result.requiresOcr, true);
+});
+
+test('doesPdfTextRequireOcr classifies a sparse title-only text layer as OCR required', () => {
+  assert.equal(doesPdfTextRequireOcr("Ava's Text Messages: March 10, 2026"), true);
+  assert.equal(doesPdfTextRequireOcr('This document contains enough selectable text to be meaningfully grounded without OCR. '.repeat(4)), false);
 });

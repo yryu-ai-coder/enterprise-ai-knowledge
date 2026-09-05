@@ -32,6 +32,7 @@ app.http('rag-search', {
             folderPath: result.folderPath,
             fileType: result.fileType,
             lastModified: result.lastModified,
+            pageNumber: result.pageNumber,
             excerpt: result.content.slice(0, 600),
             score: result.score
           }))

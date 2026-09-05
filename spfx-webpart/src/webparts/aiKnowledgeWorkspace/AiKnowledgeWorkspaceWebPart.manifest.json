@@ -12,12 +12,16 @@
     {
       "groupId": "5c03119e-3074-46fd-976b-c60198311f70",
       "group": { "default": "Advanced" },
-      "title": { "default": "Legal Document Library AI Assistant" },
+      "title": { "default": "Document Library" },
       "description": { "default": "Reusable AI assistant panel for legal documents, SharePoint lists, and site pages" },
       "officeFabricIconFontName": "Page",
       "properties": {
-        "description": "Enterprise AI Knowledge Workspace",
         "documentLibraryName": "",
+        "displayColumn1": "",
+        "displayColumn2": "",
+        "displayColumn3": "",
+        "displayColumn4": "",
+        "displayColumn5": "",
         "functionEndpoint": "https://nextcore-ai-function-bce9bufcaxb0cncm.westus-01.azurewebsites.net/api/chat"
       }
     }

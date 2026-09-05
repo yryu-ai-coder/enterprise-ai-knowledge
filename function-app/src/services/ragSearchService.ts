@@ -9,12 +9,17 @@ export interface RagSearchConfiguration {
 export interface LibraryChunk {
   id: string;
   content: string;
+  siteUrl?: string;
+  libraryId?: string;
+  libraryName?: string;
   documentName: string;
   documentUrl: string;
   folderPath: string;
   fileType: string;
   lastModified: string;
   chunkOrdinal: number;
+  pageNumber?: number;
+  sourceLabel?: string;
 }
 
 export interface LibrarySearchResult extends LibraryChunk {
@@ -38,20 +43,29 @@ function getIndexClient(configuration: RagSearchConfiguration): SearchIndexClien
   return new SearchIndexClient(configuration.endpoint, new DefaultAzureCredential());
 }
 
-function getChunkIndexDefinition(indexName: string): SearchIndex {
+export function getLibraryChunkIndexDefinition(indexName: string): SearchIndex {
   return {
     name: indexName,
     fields: [
       { name: 'id', type: 'Edm.String', key: true, filterable: true, sortable: true },
       { name: 'content', type: 'Edm.String', searchable: true, analyzerName: 'en.microsoft' },
+      { name: 'siteUrl', type: 'Edm.String', filterable: true },
+      { name: 'libraryId', type: 'Edm.String', filterable: true },
+      { name: 'libraryName', type: 'Edm.String', filterable: true, facetable: true },
       { name: 'documentName', type: 'Edm.String', searchable: true, filterable: true, sortable: true, facetable: true },
       { name: 'documentUrl', type: 'Edm.String', filterable: true },
       { name: 'folderPath', type: 'Edm.String', searchable: true, filterable: true, facetable: true },
       { name: 'fileType', type: 'Edm.String', filterable: true, facetable: true },
       { name: 'lastModified', type: 'Edm.String', filterable: true, sortable: true },
-      { name: 'chunkOrdinal', type: 'Edm.Int32', filterable: true, sortable: true }
+      { name: 'chunkOrdinal', type: 'Edm.Int32', filterable: true, sortable: true },
+      { name: 'pageNumber', type: 'Edm.Int32', filterable: true, sortable: true },
+      { name: 'sourceLabel', type: 'Edm.String', filterable: true, sortable: true }
     ]
   };
+}
+
+export function doesLibraryChunkIndexRequireSchemaUpdate(existingIndex: SearchIndex): boolean {
+  return !['siteUrl', 'libraryId', 'libraryName', 'pageNumber', 'sourceLabel'].every(requiredField => existingIndex.fields.some((field) => field.name === requiredField));
 }
 
 export async function ensureLibraryChunkIndex(): Promise<RagSearchConfiguration> {
@@ -59,12 +73,15 @@ export async function ensureLibraryChunkIndex(): Promise<RagSearchConfiguration>
   const indexClient = getIndexClient(configuration);
 
   try {
-    await indexClient.getIndex(configuration.indexName);
+    const existingIndex = await indexClient.getIndex(configuration.indexName);
+    if (doesLibraryChunkIndexRequireSchemaUpdate(existingIndex)) {
+      await indexClient.createOrUpdateIndex(getLibraryChunkIndexDefinition(configuration.indexName));
+    }
   } catch (error) {
     if ((error as { statusCode?: number }).statusCode !== 404) {
       throw error;
     }
-    await indexClient.createIndex(getChunkIndexDefinition(configuration.indexName));
+    await indexClient.createIndex(getLibraryChunkIndexDefinition(configuration.indexName));
   }
 
   return configuration;
@@ -91,12 +108,76 @@ export async function indexLibraryChunks(chunks: LibraryChunk[]): Promise<number
   return result.results.length;
 }
 
-export async function searchLibraryChunks(query: string, top = 8): Promise<LibrarySearchResult[]> {
+export interface LibrarySearchOptions {
+  libraryId: string;
+  top?: number;
+  documentUrl?: string;
+  documentName?: string;
+  documentNames?: string[];
+  folderPath?: string;
+  matchAll?: boolean;
+}
+
+function escapeODataString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+export function createLibraryIdFilter(libraryId: string): string {
+  const normalizedLibraryId = libraryId.trim();
+  if (!normalizedLibraryId) throw new Error('libraryId is required for library-scoped search.');
+  return `libraryId eq '${escapeODataString(normalizedLibraryId)}'`;
+}
+
+export function createLibraryScopedFilter(libraryId: string, documentFilter?: string): string {
+  const libraryFilter = createLibraryIdFilter(libraryId);
+  return documentFilter ? `${libraryFilter} and ${documentFilter}` : libraryFilter;
+}
+
+export function createDocumentUrlFilter(documentUrl: string): string {
+  return `documentUrl eq '${escapeODataString(documentUrl)}'`;
+}
+
+export function createDocumentNameFilter(documentName: string): string {
+  return `documentName eq '${escapeODataString(documentName)}'`;
+}
+
+export function createDocumentNamesFilter(documentNames: string[]): string {
+  const names = documentNames.map((name) => name.trim()).filter(Boolean);
+  if (names.length === 0) throw new Error('At least one selected document name is required.');
+  return `search.in(documentName, '${escapeODataString(names.join('|'))}', '|')`;
+}
+
+export function createFolderPathFilter(folderPath: string): string {
+  const normalizedFolderPath = folderPath.trim().replace(/\/$/, '');
+  if (!normalizedFolderPath) throw new Error('folderPath is required for current-folder search.');
+  return `folderPath eq '${escapeODataString(normalizedFolderPath)}'`;
+}
+
+export function getSearchTextForLibrarySearch(query: string, matchAll = false): string {
+  return matchAll ? '*' : query;
+}
+
+export function shouldFallbackToSelectedDocumentChunks(selectedDocumentUrl: string | undefined, resultCount: number): boolean {
+  return Boolean(selectedDocumentUrl && resultCount === 0);
+}
+
+export async function searchLibraryChunks(query: string, options: LibrarySearchOptions = { libraryId: '' }): Promise<LibrarySearchResult[]> {
+  const top = options.top ?? 8;
   const configuration = getRagSearchConfiguration();
   const client = getSearchClient(configuration);
-  const response = await client.search(query, {
+  const documentFilter = options.documentUrl
+    ? createDocumentUrlFilter(options.documentUrl)
+    : options.documentNames && options.documentNames.length > 0
+      ? createDocumentNamesFilter(options.documentNames)
+      : options.documentName
+        ? createDocumentNameFilter(options.documentName)
+        : options.folderPath
+          ? createFolderPathFilter(options.folderPath)
+          : undefined;
+  const response = await client.search(getSearchTextForLibrarySearch(query, options.matchAll), {
     top,
-    select: ['id', 'content', 'documentName', 'documentUrl', 'folderPath', 'fileType', 'lastModified', 'chunkOrdinal']
+    filter: createLibraryScopedFilter(options.libraryId, documentFilter),
+    select: ['id', 'content', 'siteUrl', 'libraryId', 'libraryName', 'documentName', 'documentUrl', 'folderPath', 'fileType', 'lastModified', 'chunkOrdinal', 'pageNumber', 'sourceLabel']
   });
 
   const results: LibrarySearchResult[] = [];

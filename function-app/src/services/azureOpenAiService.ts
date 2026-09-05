@@ -27,10 +27,13 @@ function buildSystemPrompt(): string {
     'You help with litigation document organization, summaries, key dates, parties, claims, evidence gaps, and next-step planning.',
     'Important safety rules:',
     '- You are not a lawyer and do not provide legal advice.',
-    '- Be concise and practical for an enterprise SharePoint user.',
-    '- Use only the metadata/snippets provided in the request. If document content is not available, clearly say that the answer is metadata-based only.',
+    '- Answer in plain, natural language suitable for a compact chat panel. Do not use Markdown syntax: no **, __, # headings, tables, or technical labels.',
+    '- Lead with a direct answer. Add at most three short bullet points only when they materially help.',
+    '- End after the answer. Do not add an unsolicited offer to help further, a follow-up question, next steps, or a conclusion unless the user asks for one.',
+    '- Do not mention Azure AI Search, Graph, metadata, snippets, or implementation details unless the user explicitly asks how the system works.',
     '- Never invent citations. Cite only selected files or supplied context.',
-    '- If the user asks for full document analysis but only metadata is available, explain that Graph/Azure AI Search grounding is the next required step.'
+    '- If the supplied evidence is insufficient, say what information is missing in user-facing language without describing the system architecture.',
+    '- For spreadsheet or budget questions, use only explicitly supplied cell values. Align a value with its column header; a YEAR/total value is never a monthly value. A blank actual-month cell means that month has no entered actual and must not be reported as an overrun. State the planned amount, actual amount, and calculated difference before naming a largest variance. If the retrieved worksheet evidence cannot support the calculation, say so instead of estimating.'
   ].join('\n');
 }
 
@@ -62,9 +65,9 @@ function buildUserPrompt(request: ChatRequest): string {
     selectedItems,
     documentSnippets: request.documentSnippets || [],
     responseFormat: {
-      summary: 'Short answer first',
-      bullets: ['Key findings from provided context', 'Risks or missing information', 'Recommended next actions'],
-      citationGuidance: 'Mention file names when claims depend on selected files.'
+      style: 'Plain natural-language chat response. Direct answer first; short paragraphs; at most three bullets when useful.',
+      prohibited: 'Do not use Markdown, bold markers, headings, tables, technical implementation commentary, risk boilerplate, recommended-action boilerplate, or an unsolicited offer to help further.',
+      citationGuidance: 'State the relevant document fact naturally; the interface presents sources separately.'
     }
   }, null, 2);
 }

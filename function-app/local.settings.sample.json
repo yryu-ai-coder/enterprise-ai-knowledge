@@ -19,6 +19,10 @@
     "AZURE_SEARCH_ENDPOINT": "https://YOUR-SEARCH-SERVICE.search.windows.net",
     "AZURE_SEARCH_INDEX_NAME": "nextcore-library-chunks",
     "RAG_SHAREPOINT_SITE_URL": "https://YOUR-TENANT.sharepoint.com/sites/YOUR-SITE",
-    "RAG_SHAREPOINT_LIBRARY_NAME": "Litigation Documents"
+    "RAG_SHAREPOINT_LIBRARY_NAME": "Litigation Documents",
+    "DOCUMENT_INTELLIGENCE_ENDPOINT": "https://YOUR-DOCUMENT-INTELLIGENCE.cognitiveservices.azure.com",
+    "DOCUMENT_INTELLIGENCE_API_KEY": "",
+    "OCR_MAX_PDF_BYTES": "4194304",
+    "OCR_MAX_PAGES": "15"
   }
 }

@@ -7,9 +7,10 @@ app.http('rag-ingest', {
   methods: ['POST'],
   authLevel: 'anonymous',
   route: 'rag/ingest',
-  handler: async (_request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> => {
+  handler: async (request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> => {
     try {
-      const result = await ingestSharePointLibrary();
+      const body = await request.json() as { siteUrl?: string; libraryName?: string };
+      const result = await ingestSharePointLibrary(body);
       return {
         status: 200,
         jsonBody: {
